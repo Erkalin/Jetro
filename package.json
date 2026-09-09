@@ -1,0 +1,74 @@
+{
+  "name": "jetro",
+  "version": "0.1.0",
+  "description": "Jetro - modern fancy download manager",
+  "author": "Erkalin",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Erkalin/Jetro.git"
+  },
+  "homepage": "https://github.com/Erkalin/Jetro#readme",
+  "bugs": {
+    "url": "https://github.com/Erkalin/Jetro/issues"
+  },
+  "main": "dist-electron/main.js",
+  "build": {
+    "appId": "com.jetrodl.app",
+    "productName": "Jetro",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "!**/*.map",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "build/icon.ico"
+      },
+      {
+        "from": "public/Jetro-notext.png",
+        "to": "public/Jetro-notext.png"
+      }
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "app:dev": "concurrently \"npm run dev\" \"npm run electron:dev\"",
+    "electron:dev": "tsc -p tsconfig.electron.json && cross-env NODE_ENV=development electron dist-electron/main.js",
+    "electron:build": "npm run build && npm run build:electron && electron-builder",
+    "test:engine": "npx tsc -p tsconfig.scripts.json && node dist-scripts/scripts/test-engine.js"
+  },
+  "dependencies": {
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
+    "socks-proxy-agent": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/react": "^18.3.10",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.3",
+    "concurrently": "^9.0.1",
+    "cross-env": "^7.0.3",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-icons": "^5.7.0",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8"
+  }
+}
