@@ -26,3 +26,7 @@ Thumbs.db
 # environment
 .env
 .env.local
+
+# vendored binaries (fetched at build time, not committed)
+bin/
+!bin/.gitkeep

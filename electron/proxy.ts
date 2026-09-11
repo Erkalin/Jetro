@@ -1,6 +1,5 @@
 import * as http from 'http';
 import * as https from 'https';
-import * as os from 'os';
 import { HttpProxyAgent } from 'http-proxy-agent';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
@@ -18,9 +17,7 @@ export interface ProxySettings {
   proxyBypass: string; // comma / semicolon / space separated hosts
 }
 
-export interface NetworkSettings extends ProxySettings {
-  vpnKillSwitch: boolean;
-}
+export type NetworkSettings = ProxySettings;
 
 export function defaultNetworkSettings(): NetworkSettings {
   return {
@@ -31,7 +28,6 @@ export function defaultNetworkSettings(): NetworkSettings {
     proxyUser: '',
     proxyPass: '',
     proxyBypass: 'localhost,127.0.0.1,::1',
-    vpnKillSwitch: false,
   };
 }
 
@@ -52,7 +48,6 @@ export function normalizeNetworkSettings(s: any): NetworkSettings {
     proxyUser: String(s.proxyUser || ''),
     proxyPass: String(s.proxyPass || ''),
     proxyBypass: typeof s.proxyBypass === 'string' ? s.proxyBypass : d.proxyBypass,
-    vpnKillSwitch: !!s.vpnKillSwitch,
   };
 }
 
@@ -246,93 +241,4 @@ export async function applySessionProxy(cfg: ProxySettings): Promise<void> {
   } catch {
     // never break startup over proxy
   }
-}
-
-// ---------- VPN ----------
-
-export interface VpnInterfaceInfo {
-  name: string;
-  addresses: string[];
-}
-
-export interface VpnStatus {
-  vpnDetected: boolean;
-  interfaces: VpnInterfaceInfo[];
-  totalInterfaces: number;
-}
-
-function looksLikeVpn(name: string): boolean {
-  const n = name.toLowerCase();
-  return (
-    n.includes('tun') ||
-    n.includes('tap') ||
-    n.includes('ppp') ||
-    n.includes('pptp') ||
-    n.includes('l2tp') ||
-    n.includes('wireguard') ||
-    n === 'wg0' ||
-    n.startsWith('wg') ||
-    n.includes('tailscale') ||
-    n.includes('zerotier') ||
-    n.includes('vpn') ||
-    n.includes('utun')
-  );
-}
-
-export function getVpnStatus(): VpnStatus {
-  let all: NodeJS.Dict<os.NetworkInterfaceInfo[]>;
-  try {
-    all = os.networkInterfaces();
-  } catch {
-    return { vpnDetected: false, interfaces: [], totalInterfaces: 0 };
-  }
-  const names = Object.keys(all);
-  const found: VpnInterfaceInfo[] = [];
-  for (const name of names) {
-    const list = (all[name] || []).filter((a) => !a.internal);
-    if (!list.length) continue;
-    if (looksLikeVpn(name)) {
-      found.push({ name, addresses: list.map((a) => a.address) });
-    }
-  }
-  // Windows: adapter names often generic ("Ethernet 2") even for VPN — also match known virtual MAC vendors? Keep name-based + non-internal check is best-effort.
-  return { vpnDetected: found.length > 0, interfaces: found, totalInterfaces: names.length };
-}
-
-/** Public IP via ipify (respects optional proxy URL). Best-effort, short timeout. */
-export function getPublicIp(proxyUrl?: string | null, timeoutMs = 9000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const target = 'https://api.ipify.org?format=json';
-    const agent = buildAgentFor(proxyUrl || null, true);
-    const req = https.get(
-      target,
-      {
-        agent,
-        headers: { 'User-Agent': 'Jetro/0.1', Accept: 'application/json' },
-      },
-      (res) => {
-        if (!res.statusCode || res.statusCode >= 400) {
-          res.resume();
-          reject(new Error('HTTP ' + res.statusCode));
-          return;
-        }
-        let body = '';
-        res.on('data', (c) => {
-          body += c;
-          if (body.length > 4096) req.destroy(new Error('response too large'));
-        });
-        res.on('end', () => {
-          try {
-            const j = JSON.parse(body);
-            if (j.ip) resolve(String(j.ip));
-            else reject(new Error('bad response'));
-          } catch (e) {
-            reject(e instanceof Error ? e : new Error('bad response'));
-          }
-        });
-      }
-    );
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')));
-  });
 }

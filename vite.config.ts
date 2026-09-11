@@ -6,6 +6,18 @@ export default defineConfig({
   base: './',
   build: {
     outDir: 'dist',
+    sourcemap: false,
+    minify: 'esbuild',
+    chunkSizeWarningLimit: 600,
+    assetsInlineLimit: 4096,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          icons: ['react-icons/fi'],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

@@ -1,6 +1,6 @@
 {
   "name": "jetro",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Jetro - modern fancy download manager",
   "author": "Erkalin",
   "license": "MIT",
@@ -16,6 +16,9 @@
   "build": {
     "appId": "com.jetrodl.app",
     "productName": "Jetro",
+    "artifactName": "${productName} ${version}.${ext}",
+    "asar": true,
+    "compression": "maximum",
     "directories": {
       "output": "release"
     },
@@ -33,6 +36,22 @@
       {
         "from": "public/Jetro-notext.png",
         "to": "public/Jetro-notext.png"
+      },
+      {
+        "from": "bin/yt-dlp.exe",
+        "to": "bin/yt-dlp.exe"
+      },
+      {
+        "from": "bin/ffmpeg.exe",
+        "to": "bin/ffmpeg.exe"
+      },
+      {
+        "from": "bin/ffprobe.exe",
+        "to": "bin/ffprobe.exe"
+      },
+      {
+        "from": "bin/quickjs.exe",
+        "to": "bin/quickjs.exe"
       }
     ],
     "win": {
@@ -48,8 +67,10 @@
     "build:electron": "tsc -p tsconfig.electron.json",
     "app:dev": "concurrently \"npm run dev\" \"npm run electron:dev\"",
     "electron:dev": "tsc -p tsconfig.electron.json && cross-env NODE_ENV=development electron dist-electron/main.js",
-    "electron:build": "npm run build && npm run build:electron && electron-builder",
-    "test:engine": "npx tsc -p tsconfig.scripts.json && node dist-scripts/scripts/test-engine.js"
+    "electron:build": "npm run build && npm run build:electron && npx tsc -p tsconfig.scripts.json && node dist-scripts/scripts/build-release.js",
+    "test:engine": "npx tsc -p tsconfig.scripts.json && node dist-scripts/scripts/test-engine.js",
+    "fetch:binaries": "npx tsc -p tsconfig.scripts.json && node dist-scripts/scripts/fetch-binaries.js",
+    "pre-electron-build": "npm run fetch:binaries"
   },
   "dependencies": {
     "http-proxy-agent": "^7.0.2",
