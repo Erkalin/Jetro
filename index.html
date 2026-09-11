@@ -9,8 +9,25 @@
       href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="icon" type="image/png" href="./Jetro-notext.png" />
+    <link rel="icon" type="image/png" href="/src/assets/Jetro-notext.png" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f2f7fd" />
     <title>Jetro</title>
+    <script>
+      // Apply the glass theme before first paint (no light flash in dark mode).
+      try {
+        var t = localStorage.getItem('jetro-theme') || 'system';
+        if (t !== 'light' && t !== 'dark') t = 'system';
+        var dark = t === 'dark' || (t === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        document.documentElement.style.background = dark ? '#080f20' : '#ffffff';
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', dark ? '#080f20' : '#f2f7fd');
+      } catch (e) {}
+    </script>
+    <style>
+      html[data-theme="dark"] body { background: #060b16; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

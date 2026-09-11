@@ -20,7 +20,28 @@ export interface ProbeResult {
 }
 
 const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jetro/0.1 segmented downloader';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jetro/0.2.0 segmented downloader';
+
+/**
+ * Ensure a file's parent folder exists. A bare Windows drive ("C:") is
+ * drive-relative and mkdir('C:') fails — expand to the drive root ("C:\").
+ * Throws a user-facing error (shown on the item) instead of raw mkdir text.
+ */
+async function ensureParentDir(filePath: string): Promise<void> {
+  let dir = path.dirname(filePath);
+  if (/^[a-zA-Z]:$/.test(dir)) dir += path.sep;
+  try {
+    await fs.promises.mkdir(dir, { recursive: true });
+  } catch (e: any) {
+    const msg = String((e as any)?.message || e);
+    if (/EPERM|EACCES|EROFS/i.test(msg)) {
+      throw new Error(
+        `Permission denied writing to ${dir} — Windows protects that location. Run Jetro as administrator or choose another folder.`,
+      );
+    }
+    throw new Error(`Could not create folder ${dir} (${msg}). Check the drive exists and try again.`);
+  }
+}
 
 export interface ProxyOptions {
   /** Static proxy URL (e.g. http://user:pass@host:8080 or socks5://host:1080). Null = direct. */
@@ -288,7 +309,7 @@ function totalFromHeaders(res: http.IncomingMessage, rangeStart: number): number
   return 0;
 }
 
-export function guessFilename(url: string, disposition?: string, contentType?: string): string {
+export function guessFilename(url: string, disposition?: string, _contentType?: string): string {
   if (disposition) {
     const m = /filename\*?=(?:UTF-8'')?"?([^";\n]+)/i.exec(disposition);
     if (m) return decodeURIComponent(m[1].replace(/"/g, '')).trim();
@@ -302,7 +323,6 @@ export function guessFilename(url: string, disposition?: string, contentType?: s
 }
 
 export type ProgressCb = (downloaded: number, total: number, speedBps: number) => void;
-export type SegmentCb = (segments: Segment[]) => void;
 
 export class SegmentedDownload {
   url: string;
@@ -314,7 +334,6 @@ export class SegmentedDownload {
   aborted = false;
   paused = false;
   private fh: fs.promises.FileHandle | null = null;
-  private startTime = 0;
   private bytesSinceTick = 0;
   speedBps = 0;
   speedLimitBps = 0; // 0 = unlimited
@@ -332,7 +351,6 @@ export class SegmentedDownload {
   private runId = 0;
 
   onProgress: ProgressCb = () => {};
-  onSegments: SegmentCb = () => {};
   /** Serializes saveState() writes so they can't tear the resume file. */
   private saveQueue: Promise<void> = Promise.resolve();
   /**
@@ -375,7 +393,7 @@ export class SegmentedDownload {
     this.saveQueue = new Promise<void>((r) => {
       release = r;
     });
-    // Serialize writes: the progress tick fires every 500ms and must never
+    // Serialize writes: the progress tick saves every ~500ms and must never
     // interleave two writes into a torn resume file (which would discard all
     // progress on the next resume).
     try {
@@ -752,7 +770,14 @@ export class SegmentedDownload {
             };
             res.on('data', (c: Buffer) => {
               this.bytesSinceTick += c.length;
-              this.throttle(c.length);
+              if (this.speedLimitBps) {
+                res.pause();
+                this.throttle(c.length).then(() => {
+                  if (!this.aborted) res.resume();
+                }).catch(() => {
+                  try { res.resume(); } catch {}
+                });
+              }
             });
             res.pipe(ws);
             ws.on('finish', () => {
@@ -842,8 +867,7 @@ export class SegmentedDownload {
     }
 
     // Pre-allocate file
-    const dir = path.dirname(this.filePath);
-    await fs.promises.mkdir(dir, { recursive: true });
+    await ensureParentDir(this.filePath);
     if (!fs.existsSync(this.filePath)) {
       const fh0 = await fs.promises.open(this.filePath, 'w');
       await fh0.truncate(this.totalBytes);
@@ -868,17 +892,16 @@ export class SegmentedDownload {
    * is re-driven — so exactly the real amount is downloaded, never more.
    */
   private async driveSegments(): Promise<void> {
-    this.startTime = Date.now();
-
+    let ticks = 0;
     const tick = setInterval(() => {
       const done = this.segments.reduce((a, s) => a + s.downloaded, 0);
       // account for previously resumed bytes stored? downloaded already counts them
-      this.speedBps = Math.round(this.bytesSinceTick * 2); // 500ms window
+      this.speedBps = Math.round(this.bytesSinceTick * 10); // 100ms window
       this.bytesSinceTick = 0;
       this.onProgress(done, this.totalBytes, this.speedBps);
-      this.onSegments(this.segments);
-      this.saveState();
-    }, 500);
+      // UI updates at 10Hz but resume-state disk writes stay at ~2Hz.
+      if (++ticks % 5 === 0) this.saveState();
+    }, 100);
 
     try {
       for (let round = 0; ; round++) {
@@ -979,15 +1002,15 @@ export class SegmentedDownload {
   /** Single-connection download (used when ranges are unavailable or ignored). */
   private async runSingle(): Promise<void> {
     this.numConnections = 1;
-    this.startTime = Date.now();
+    await ensureParentDir(this.filePath);
     const tick = setInterval(() => {
       try {
         const s = fs.existsSync(this.filePath) ? fs.statSync(this.filePath).size : 0;
-        this.speedBps = Math.round(this.bytesSinceTick);
+        this.speedBps = Math.round(this.bytesSinceTick * 10); // 100ms window
         this.bytesSinceTick = 0;
         this.onProgress(s, this.totalBytes || s, this.speedBps);
       } catch {}
-    }, 500);
+    }, 100);
     try {
       await this.singleConnection();
     } finally {
