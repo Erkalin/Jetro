@@ -1,0 +1,67 @@
+/* Iranyekan — self-hosted Persian font (woff2 primary, ttf fallback).
+   woff2 files are converted from the TTFs in the same folder (~55% smaller).
+   To swap the typeface later, drop new files here and update the family name. */
+@font-face {
+  font-family: 'Iranyekan';
+  font-style: normal;
+  font-weight: 100;
+  font-display: swap;
+  src: url('../fonts/Qs_Iranyekan thin.woff2') format('woff2'),
+    url('../fonts/Qs_Iranyekan thin.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Iranyekan';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('../fonts/Qs_Iranyekan light.woff2') format('woff2'),
+    url('../fonts/Qs_Iranyekan light.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Iranyekan';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/Qs_Iranyekan.woff2') format('woff2'),
+    url('../fonts/Qs_Iranyekan.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Iranyekan';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/Qs_Iranyekan medium.woff2') format('woff2'),
+    url('../fonts/Qs_Iranyekan medium.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Iranyekan';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/Qs_Iranyekan bold.woff2') format('woff2'),
+    url('../fonts/Qs_Iranyekan bold.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Iranyekan';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url('../fonts/Qs_Iranyekan extrabold.woff2') format('woff2'),
+    url('../fonts/Qs_Iranyekan extrabold.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Iranyekan';
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url('../fonts/Qs_Iranyekan black.woff2') format('woff2'),
+    url('../fonts/Qs_Iranyekan black.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Iranyekan';
+  font-style: normal;
+  font-weight: 950;
+  font-display: swap;
+  src: url('../fonts/Qs_Iranyekan extrablack.woff2') format('woff2'),
+    url('../fonts/Qs_Iranyekan extrablack.ttf') format('truetype');
+}

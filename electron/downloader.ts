@@ -20,7 +20,7 @@ export interface ProbeResult {
 }
 
 const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jetro/0.2.0 segmented downloader';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jetro/1.0.0 segmented downloader';
 
 /**
  * Ensure a file's parent folder exists. A bare Windows drive ("C:") is
@@ -94,6 +94,26 @@ async function agentForRequest(targetUrl: string, opts?: ProxyOptions): Promise<
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Smooth a raw 100ms-window speed sample so the UI ramps instead of snapping.
+ * Fast attack on the way up, slow release on the way down: a single empty
+ * window (throttle sleep, retry pause, tail segment) decays the displayed
+ * speed instead of zeroing it, so ETA doesn't flicker to "—". Snaps to 0
+ * only after a sustained stall drives the value into the noise floor.
+ */
+export function smoothSpeedBps(prev: number, instant: number): number {
+  const p = Math.max(0, Math.round(Number(prev) || 0));
+  const ins = Math.max(0, Math.round(Number(instant) || 0));
+  if (p <= 0) {
+    if (ins <= 0) return 0;
+    return Math.round(ins * 0.4);
+  }
+  if (ins >= p) return Math.round(p + (ins - p) * 0.35);
+  const v = Math.round(p + (ins - p) * 0.25);
+  if (ins === 0 && v < 80) return v < 20 ? 0 : v;
+  return Math.max(0, v);
 }
 
 const RETRYABLE_CODES = new Set([
@@ -337,6 +357,18 @@ export class SegmentedDownload {
   private bytesSinceTick = 0;
   speedBps = 0;
   speedLimitBps = 0; // 0 = unlimited
+  /**
+   * Global token bucket shared by every connection of every download.
+   * The README promises a *global* limiter: N parallel Range connections
+   * (and M concurrent downloads) must add up to `speedLimitBps` in total,
+   * not `N * M * speedLimitBps`. All throttle() calls reserve bytes from
+   * this one bucket under a promise-chain mutex, so the long-term average
+   * across the whole app converges to the limit.
+   */
+  private static bucketTokens = 0;
+  private static bucketLastMs = 0;
+  private static bucketInit = false;
+  private static bucketChain: Promise<void> = Promise.resolve();
   statePath: string;
   proxyOpts?: ProxyOptions;
   /** In-flight requests, so pause() can fail them fast instead of leaking. */
@@ -371,6 +403,11 @@ export class SegmentedDownload {
 
   updateProxy(proxyOpts?: ProxyOptions) {
     this.proxyOpts = proxyOpts;
+  }
+
+  /** Live-update the limiter without restarting the download. */
+  setSpeedLimitBps(bps: number) {
+    this.speedLimitBps = Math.max(0, Math.round(Number(bps) || 0));
   }
 
   async loadState(): Promise<boolean> {
@@ -494,10 +531,57 @@ export class SegmentedDownload {
   }
 
   private async throttle(n: number) {
-    if (!this.speedLimitBps) return;
-    // simple token bucket: expected time for n bytes
-    const expectedMs = (n / this.speedLimitBps) * 1000;
-    if (expectedMs > 2) await new Promise((r) => setTimeout(r, expectedMs));
+    const limit = Math.max(0, Math.round(this.speedLimitBps || 0));
+    if (!limit || n <= 0) return;
+    const need = Math.min(Math.floor(n), 1 << 30);
+    if (need <= 0) return;
+    // Atomically reserve `need` bytes from the shared bucket. The wait is
+    // slept *after* releasing the mutex so concurrent connections queue up
+    // future slots instead of all sleeping the same window and bursting.
+    let waitMs = 0;
+    const prev = SegmentedDownload.bucketChain;
+    let release!: () => void;
+    SegmentedDownload.bucketChain = new Promise<void>((r) => {
+      release = r;
+    });
+    await prev;
+    try {
+      const now = Date.now();
+      const cap = limit; // 1 second of burst
+      if (!SegmentedDownload.bucketInit) {
+        SegmentedDownload.bucketTokens = cap;
+        SegmentedDownload.bucketLastMs = now;
+        SegmentedDownload.bucketInit = true;
+      } else {
+        if (SegmentedDownload.bucketTokens > cap) SegmentedDownload.bucketTokens = cap;
+        if (SegmentedDownload.bucketLastMs <= now) {
+          const elapsedSec = (now - SegmentedDownload.bucketLastMs) / 1000;
+          SegmentedDownload.bucketTokens = Math.min(
+            cap,
+            SegmentedDownload.bucketTokens + elapsedSec * limit
+          );
+          SegmentedDownload.bucketLastMs = now;
+        }
+        // else: bucket is in debt from earlier reservations — no refill.
+      }
+      if (SegmentedDownload.bucketTokens >= need) {
+        SegmentedDownload.bucketTokens -= need;
+      } else {
+        const deficit = need - SegmentedDownload.bucketTokens;
+        const deficitMs = (deficit / limit) * 1000;
+        if (SegmentedDownload.bucketLastMs > now) {
+          waitMs = SegmentedDownload.bucketLastMs - now + deficitMs;
+          SegmentedDownload.bucketLastMs += deficitMs;
+        } else {
+          waitMs = deficitMs;
+          SegmentedDownload.bucketLastMs = now + deficitMs;
+        }
+        SegmentedDownload.bucketTokens = 0;
+      }
+    } finally {
+      release();
+    }
+    if (waitMs > 2) await new Promise((r) => setTimeout(r, waitMs));
   }
 
   private async downloadRange(seg: Segment): Promise<void> {
@@ -896,7 +980,7 @@ export class SegmentedDownload {
     const tick = setInterval(() => {
       const done = this.segments.reduce((a, s) => a + s.downloaded, 0);
       // account for previously resumed bytes stored? downloaded already counts them
-      this.speedBps = Math.round(this.bytesSinceTick * 10); // 100ms window
+      this.speedBps = smoothSpeedBps(this.speedBps, this.bytesSinceTick * 10); // 100ms window, smoothed
       this.bytesSinceTick = 0;
       this.onProgress(done, this.totalBytes, this.speedBps);
       // UI updates at 10Hz but resume-state disk writes stay at ~2Hz.
@@ -1006,7 +1090,7 @@ export class SegmentedDownload {
     const tick = setInterval(() => {
       try {
         const s = fs.existsSync(this.filePath) ? fs.statSync(this.filePath).size : 0;
-        this.speedBps = Math.round(this.bytesSinceTick * 10); // 100ms window
+        this.speedBps = smoothSpeedBps(this.speedBps, this.bytesSinceTick * 10); // 100ms window, smoothed
         this.bytesSinceTick = 0;
         this.onProgress(s, this.totalBytes || s, this.speedBps);
       } catch {}

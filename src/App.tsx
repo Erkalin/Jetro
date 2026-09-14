@@ -1,647 +1,80 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  FiArchive, FiArrowDown, FiBox, FiCheckCircle, FiChevronDown, FiClipboard,
-  FiClock, FiCpu, FiDisc, FiDownloadCloud, FiEdit2, FiExternalLink, FiFileText, FiFilm,
+  FiActivity, FiArchive, FiArrowDown, FiBox, FiCheckCircle, FiChevronDown, FiClipboard,
+  FiClock, FiDisc, FiDownloadCloud, FiEdit2, FiExternalLink, FiFileText, FiFilm,
   FiFolder, FiGlobe, FiGrid, FiHardDrive, FiInbox, FiInfo, FiLayers, FiList, FiMonitor, FiMoon, FiMusic, FiPause, FiPlay,
   FiPlus, FiRefreshCw, FiRotateCcw, FiSettings, FiSquare, FiSun, FiTool, FiTrash2, FiX, FiXCircle, FiZap,
 } from 'react-icons/fi';
 import { MdExtension } from 'react-icons/md';
 
 import jetroLogo from './assets/Jetro-notext.png';
-
-interface Item {
-  id: string;
-  url: string;
-  filename: string;
-  savePath: string;
-  totalBytes: number;
-  downloadedBytes: number;
-  status: string;
-  speedBps: number;
-  connections: number;
-  supportsRange: boolean;
-  error?: string;
-  category: string;
-  queueId?: string | null;
-  via?: string;
-  videoHeight?: number;
-  audioOnly?: boolean;
-  totalBytesIsEstimate?: boolean;
-  createdAt?: number;
-  /** Last attempt timestamp (backend). Falls back to createdAt for old rows. */
-  lastTryAt?: number;
-  attempts?: number;
-  nextRetryAt?: number | null;
-  subtitles?: boolean;
-}
-function fmtSize(n: number, estimated?: boolean) {
-  const s = fmtBytes(n);
-  return estimated && n ? `~${s}` : s;
-}
-
-type QueuePowerAction = 'nothing' | 'sleep' | 'hibernate' | 'shutdown' | 'restart';
-const QUEUE_POWER_OPTIONS: { value: QueuePowerAction; label: string }[] = [
-  { value: 'nothing', label: 'Do nothing' },
-  { value: 'sleep', label: 'Sleep' },
-  { value: 'hibernate', label: 'Hibernate' },
-  { value: 'shutdown', label: 'Shutdown' },
-  { value: 'restart', label: 'Restart' },
-];
-function normalizeQueuePowerAction(v: any): QueuePowerAction {
-  return v === 'sleep' || v === 'hibernate' || v === 'shutdown' || v === 'restart' ? v : 'nothing';
-}
-function queuePowerLabel(v: any): string {
-  const a = normalizeQueuePowerAction(v);
-  return QUEUE_POWER_OPTIONS.find((o) => o.value === a)?.label || 'Do nothing';
-}
-
-interface Queue {
-  id: string;
-  name: string;
-  running: boolean;
-  maxConcurrent: number;
-  schedulerEnabled: boolean;
-  scheduleStart: string;
-  scheduleStop: string;
-  createdAt: number;
-  afterComplete?: QueuePowerAction;
-  powerFiredAt?: number | null;
-}
-
-function fmtBytes(n: number) {
-  if (!n) return '—';
-  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let i = 0;
-  let v = n;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(v >= 100 ? 0 : 1)} ${u[i]}`;
-}
-function fmtSpeed(bps: number) {
-  if (!bps) return '0 KB/s';
-  return fmtBytes(bps) + '/s';
-}
-/** 0–100 progress of an item (same math as the card progress bar). */
-function itemPct(it: Item): number {
-  if (!it.totalBytes) return 0;
-  return Math.min(100, (it.downloadedBytes / it.totalBytes) * 100);
-}
-/** Details-view Status column: "Completed" or a 2-decimal percentage. */
-function fmtDetailStatus(it: Item): string {
-  if (it.status === 'completed') return 'Completed';
-  return `${itemPct(it).toFixed(2)}%`;
-}
-/** Details-view Size column: downloaded + overall size ("12.5 MB / 100 MB"). */
-function fmtDetailSize(it: Item): string {
-  if (it.status === 'completed') {
-    const total = it.totalBytes || it.downloadedBytes;
-    return total ? fmtBytes(total) : '—';
-  }
-  const total = it.totalBytes || 0;
-  const done = it.downloadedBytes || 0;
-  if (!total) return done ? `${fmtBytes(done)} / —` : '—';
-  return `${done ? fmtBytes(done) : '0 B'} / ${fmtSize(total, !!it.totalBytesIsEstimate)}`;
-}
-/** Effective "last try" timestamp (backend field, createdAt fallback). */
-function lastTryOf(it: Item): number {
-  const t = Number((it as any)?.lastTryAt) || Number((it as any)?.createdAt) || 0;
-  return t > 0 ? t : 0;
-}
-/** Details-view Last Try column: month + day + 24h time ("Sep 11 14:05:09"). */
-const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-function fmtLastTry(ts: number): string {
-  if (!ts) return '—';
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return '—';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${MONTH_SHORT[d.getMonth()]} ${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-function fmtLastTryTitle(ts: number): string {
-  if (!ts) return 'Never tried yet';
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return 'Never tried yet';
-  return d.toLocaleString();
-}
-function statusLabel(status: string) {
-  switch (status) {
-    case 'downloading': return 'Downloading';
-    case 'completed': return 'Completed';
-    case 'error': return 'Error';
-    case 'paused': return 'Paused';
-    case 'queued': return 'Queued';
-    case 'merging': return 'Merging';
-    default: return status;
-  }
-}
-function statusColor(status: string) {
-  // Theme-aware via CSS vars so statuses stay readable on light + dark glass.
-  switch (status) {
-    case 'downloading': return 'var(--green)';
-    case 'completed': return 'var(--accent)';
-    case 'error': return 'var(--red)';
-    case 'paused': return 'var(--amber)';
-    default: return 'var(--muted)';
-  }
-}
-
-// ---------- Queue schedules: strict 24-hour HH:MM ----------
-const TIME_24H_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
-const QUEUE_SCHED_DEFAULT_START = '22:00';
-const QUEUE_SCHED_DEFAULT_STOP = '07:00';
-/** Normalize user input to HH:MM 24h ("2:5" → "02:05"). Returns '' when invalid. */
-function normalizeTime24h(v: unknown): string {
-  const s = String(v ?? '').trim();
-  if (TIME_24H_RE.test(s)) return s;
-  const m = /^(\d{1,2})\s*:\s*(\d{1,2})$/.exec(s);
-  if (m) {
-    const h = Number(m[1]);
-    const min = Number(m[2]);
-    if (Number.isInteger(h) && Number.isInteger(min) && h >= 0 && h <= 23 && min >= 0 && min <= 59) {
-      return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
-    }
-  }
-  return '';
-}
-/** Drop the removed global-scheduler keys so old settings files never mark the form dirty. */
-function stripGlobalScheduler(s: any): any {
-  if (!s || typeof s !== 'object') return s;
-  const c: any = { ...s };
-  delete c.schedulerEnabled;
-  delete c.schedulerStart;
-  delete c.schedulerStop;
-  return c;
-}
-
-// ---------- Settings dropdown options ----------
-// Per-file connection presets (1–32). Shared by Settings, New Download and Batch.
-const CONNECTION_OPTIONS = [1, 4, 8, 16, 32];
-// Speed limit presets in KB/s (0 = unlimited).
-const SPEED_LIMIT_OPTIONS: { value: number; label: string }[] = [
-  { value: 0, label: 'Unlimited' },
-  { value: 100, label: '100 KB/s' },
-  { value: 256, label: '256 KB/s' },
-  { value: 512, label: '512 KB/s' },
-  { value: 1024, label: '1 MB/s' },
-  { value: 2048, label: '2 MB/s' },
-  { value: 5120, label: '5 MB/s' },
-  { value: 10240, label: '10 MB/s' },
-];
-function speedLimitLabel(kbps: number): string {
-  const v = Math.max(0, Math.round(Number(kbps) || 0));
-  if (!v) return 'Unlimited';
-  if (v >= 1024 && v % 1024 === 0) return `${v / 1024} MB/s`;
-  return `${v} KB/s`;
-}
-/** Display value for the Connections dropdown; falls back to 8 for legacy garbage. */
-function normalizeConnectionOption(v: unknown): number {
-  const n = Math.round(Number(v));
-  return Number.isFinite(n) ? n : 8;
-}
-
-type ThemeChoice = 'light' | 'dark' | 'system';
-const THEME_KEY = 'jetro-theme';
-function normalizeTheme(v: any): ThemeChoice {
-  return v === 'light' || v === 'dark' || v === 'system' ? v : 'system';
-}
-function readInitialTheme(): ThemeChoice {
-  try {
-    return normalizeTheme(localStorage.getItem(THEME_KEY));
-  } catch {
-    return 'system';
-  }
-}
-function resolveTheme(choice: ThemeChoice): 'light' | 'dark' {
-  if (choice === 'light' || choice === 'dark') return choice;
-  try {
-    if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches) return 'dark';
-  } catch {}
-  return 'light';
-}
-
-// ---------- Downloads list viewing mode (cards vs explorer-like details) ----------
-type ViewMode = 'cards' | 'details';
-type DetailColId = 'name' | 'queue' | 'status' | 'size' | 'speed' | 'eta' | 'lastTry';
-const DETAIL_COLS_DEFAULT: DetailColId[] = ['name', 'queue', 'status', 'size', 'speed', 'eta', 'lastTry'];
-const DETAIL_COL_LABELS: Record<DetailColId, string> = {
-  name: 'File Name',
-  queue: 'Queue',
-  status: 'Status',
-  size: 'Size',
-  speed: 'Download Speed',
-  eta: 'ETA',
-  lastTry: 'Last Try',
-};
-const DETAIL_WIDTHS_DEFAULT: Record<DetailColId, number> = {
-  name: 260,
-  queue: 140,
-  status: 110,
-  size: 160,
-  speed: 110,
-  eta: 90,
-  lastTry: 140,
-};
-const DETAIL_MIN_WIDTH: Record<DetailColId, number> = {
-  name: 140,
-  queue: 90,
-  status: 80,
-  size: 110,
-  speed: 90,
-  eta: 70,
-  lastTry: 110,
-};
-function fmtEta(it: Item): string {
-  if (it.status === 'completed') return '—';
-  const sp = Number(it.speedBps || 0);
-  if (sp <= 0 || !it.totalBytes) return '—';
-  const sec = Math.max(0, Math.round((it.totalBytes - it.downloadedBytes) / sp));
-  if (!Number.isFinite(sec)) return '—';
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ${String(sec % 60).padStart(2, '0')}s`;
-  return `${Math.floor(sec / 3600)}h ${String(Math.floor((sec % 3600) / 60)).padStart(2, '0')}m`;
-}
-const VIEW_MODE_KEY = 'jetro-view-mode';
-const DETAIL_LAYOUT_KEY = 'jetro-details-cols';
-function readViewMode(): ViewMode {
-  try {
-    return localStorage.getItem(VIEW_MODE_KEY) === 'details' ? 'details' : 'cards';
-  } catch {
-    return 'cards';
-  }
-}
-function readDetailLayout(): { order: DetailColId[]; widths: Record<DetailColId, number> } {
-  const fallback = { order: [...DETAIL_COLS_DEFAULT], widths: { ...DETAIL_WIDTHS_DEFAULT } };
-  try {
-    const raw = localStorage.getItem(DETAIL_LAYOUT_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as { order?: unknown; widths?: unknown };
-    const order = Array.isArray(parsed.order)
-      ? (parsed.order.filter((c): c is DetailColId => (DETAIL_COLS_DEFAULT as string[]).includes(String(c))) as DetailColId[])
-      : [];
-    // Keep every column exactly once, appending any missing (forward-compat).
-    const seen = new Set<DetailColId>();
-    const clean: DetailColId[] = [];
-    for (const c of order) {
-      if (!seen.has(c)) {
-        seen.add(c);
-        clean.push(c);
-      }
-    }
-    for (const c of DETAIL_COLS_DEFAULT) {
-      if (!seen.has(c)) clean.push(c);
-    }
-    const widths = { ...DETAIL_WIDTHS_DEFAULT };
-    if (parsed.widths && typeof parsed.widths === 'object') {
-      for (const c of DETAIL_COLS_DEFAULT) {
-        const w = Number((parsed.widths as Record<string, unknown>)[c]);
-        if (Number.isFinite(w)) {
-          widths[c] = Math.min(600, Math.max(DETAIL_MIN_WIDTH[c], Math.round(w)));
-        }
-      }
-    }
-    return { order: clean, widths };
-  } catch {
-    return fallback;
-  }
-}
-function CategoryIcon({ cat, size = 20 }: { cat: string; size?: number }) {
-  const map: Record<string, typeof FiBox> = {
-    video: FiFilm,
-    audio: FiMusic,
-    compressed: FiArchive,
-    document: FiFileText,
-    program: FiCpu,
-    other: FiBox,
-  };
-  const Icon = map[cat] || FiBox;
-  return <Icon size={size} className="file-fallback-icon" />;
-}
-function guessNameFromUrl(url: string): string {
-  const tryParse = (candidate: string) => {
-    const u = new URL(candidate);
-    const base = decodeURIComponent(u.pathname.split('/').pop() || '').split('?')[0];
-    if (base && base.includes('.')) return base.replace(/[<>:"/\\|?*]/g, '_');
-    return null;
-  };
-  try {
-    const name = tryParse(url);
-    if (name) return name;
-  } catch {}
-  try {
-    const name = tryParse(`https://${url}`);
-    if (name) return name;
-  } catch {}
-  return 'download.bin';
-}
-
-function isVideoPageUrl(raw: string): boolean {
-  const s = String(raw || '').toLowerCase();
-  return /(youtube\.com|youtu\.be|tiktok\.com|vimeo\.com|dailymotion\.|twitch\.tv|instagram\.com|facebook\.com|fb\.watch|x\.com|twitter\.com)\//.test(s)
-    || /(youtube\.com|youtu\.be)/.test(s);
-}
-
-function sanitizeVideoFilename(title: string, ext: string): string {
-  const clean = String(title || '').trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '').slice(0, 120) || 'video';
-  const e = String(ext || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4';
-  return clean.toLowerCase().endsWith('.' + e.toLowerCase()) ? clean : `${clean}.${e}`;
-}
-
-function isValidDownloadHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/\.+$/, '');
-  if (!h || h.length > 253) return false;
-  if (h === 'localhost') return true;
-  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(h)) {
-    return h.split('.').every((p) => {
-      if (!p || p.length > 3 || !/^\d+$/.test(p)) return false;
-      const n = Number(p);
-      return n >= 0 && n <= 255;
-    });
-  }
-  if (h.includes(':')) {
-    return /^[0-9a-f:]+$/i.test(h) && h.includes(':');
-  }
-  if (!h.includes('.')) return false;
-  if (h.includes('_') || h.includes(' ') || h.includes('/')) return false;
-  const labels = h.split('.');
-  if (labels.some((l) => !l || l.length > 63)) return false;
-  const labelRe = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
-  if (!labels.every((l) => labelRe.test(l))) return false;
-  const tld = labels[labels.length - 1];
-  if (tld.length < 2 || !/[a-z]/.test(tld)) return false;
-  return true;
-}
-
-/**
- * Accept bare domains (e.g. `abcdef.xyz/file.zip`) as well as full URLs.
- * Missing scheme defaults to https://. Throws a user-facing error otherwise.
- */
-function normalizeDownloadUrl(raw: string): string {
-  const input = String(raw || '').trim();
-  if (!input) throw new Error('Please enter a download link.');
-  if (input.length > 2048 || /\s/.test(input)) {
-    throw new Error('Please enter a valid link (e.g. example.com/file.zip).');
-  }
-  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(input);
-  if (!hasScheme) {
-    const schemeMatch = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(input);
-    if (schemeMatch) {
-      const scheme = schemeMatch[1];
-      const after = input.slice(schemeMatch[0].length);
-      // Don't mistake host:port for a scheme (localhost:3000/x, example.com:8080/x).
-      const looksLikeHostPort =
-        /^\d+(\/|$|\?|#)/.test(after) || scheme.includes('.') || scheme.toLowerCase() === 'localhost';
-      if (!looksLikeHostPort) {
-        throw new Error('Only http:// and https:// links are supported.');
-      }
-    }
-  }
-  const candidate = hasScheme ? input : input.startsWith('//') ? `https:${input}` : `https://${input}`;
-  // Guard against WHATWG URL parsing all-numeric hosts as IPv4
-  // (e.g. "123.456" becomes 123.0.1.200): reject numeric hosts that
-  // aren't valid 4-part IPv4 before parsing.
-  let rawHost = candidate.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '').split(/[/?#]/)[0];
-  if (rawHost.startsWith('[')) {
-    const end = rawHost.indexOf(']');
-    rawHost = end === -1 ? rawHost : rawHost.slice(1, end);
-  } else if (!rawHost.includes(':') || /:\d*$/.test(rawHost)) {
-    rawHost = rawHost.replace(/:\d*$/, '');
-  }
-  if (!rawHost.includes(':') && /^[\d.]+$/.test(rawHost)) {
-    const parts = rawHost.split('.');
-    const validIpv4 =
-      parts.length === 4 && parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255);
-    if (!validIpv4) {
-      throw new Error('Please enter a valid link (e.g. example.com/file.zip).');
-    }
-  }
-  let u: URL;
-  try {
-    u = new URL(candidate);
-  } catch {
-    throw new Error('Please enter a valid link (e.g. example.com/file.zip).');
-  }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-    throw new Error('Only http:// and https:// links are supported.');
-  }
-  if (!u.hostname || !isValidDownloadHost(u.hostname)) {
-    throw new Error('Please enter a valid link (e.g. example.com/file.zip).');
-  }
-  return candidate;
-}
-
-const FILENAME_FALLBACK = 'download.bin';
-
-/** Extension (format) of a file name, lowercased and without the dot. '' if none. */
-function extOf(name: string): string {
-  const base = (name.split(/[\\/]/).pop() || '').trim();
-  const i = base.lastIndexOf('.');
-  if (i <= 0 || i === base.length - 1) return '';
-  return base.slice(i + 1).toLowerCase();
-}
-
-const hasBackend = () => typeof window !== 'undefined' && !!window.jetro;
-
-// ---------- New Batch Download helpers (pattern with * → many URLs) ----------
-const BATCH_MAX_FILES = 200;
-type BatchMode = 'numbers' | 'letters';
-
-function padBatchNum(n: number, size: number): string {
-  const s = String(n);
-  if (s.length >= size) return s;
-  return '0'.repeat(size - s.length) + s;
-}
-
-function expandBatchUrls(
-  pattern: string,
-  mode: BatchMode,
-  fromNum: number,
-  toNum: number,
-  wildcardSize: number,
-  fromLetter: string,
-  toLetter: string,
-): string[] {
-  const out: string[] = [];
-  if (!pattern.includes('*')) return out;
-  if (mode === 'numbers') {
-    for (let i = fromNum; i <= toNum; i++) {
-      out.push(pattern.split('*').join(padBatchNum(i, wildcardSize)));
-    }
-  } else {
-    const a = String(fromLetter || '').charCodeAt(0);
-    const b = String(toLetter || '').charCodeAt(0);
-    for (let c = a; c <= b; c++) {
-      out.push(pattern.split('*').join(String.fromCharCode(c)));
-    }
-  }
-  return out;
-}
-
-function isSingleLetter(s: string): boolean {
-  return /^[A-Za-z]$/.test(String(s || ''));
-}
-
-/** Validate batch inputs. Returns expanded URLs or an error message. */
-function validateBatchInput(
-  pattern: string,
-  mode: BatchMode,
-  fromNumRaw: string,
-  toNumRaw: string,
-  wildcardRaw: string,
-  fromLetterRaw: string,
-  toLetterRaw: string,
-): { urls?: string[]; error?: string } {
-  const p = String(pattern || '').trim();
-  if (!p) return { error: 'Please paste the address link.' };
-  if (!p.includes('*')) return { error: 'The address must contain an asterisk (*) where the part number/letter goes.' };
-  if (p.length > 2048 || /\s/.test(p)) return { error: 'Please enter a valid link (e.g. example.com/files/part_*.zip).' };
-  if (mode === 'numbers') {
-    if (!/^-?\d+$/.test(String(fromNumRaw).trim()) || !/^-?\d+$/.test(String(toNumRaw).trim())) {
-      return { error: 'From and To accept numbers only.' };
-    }
-    if (!/^\d+$/.test(String(wildcardRaw).trim())) {
-      return { error: 'Wildcard size accepts numbers only (1–10).' };
-    }
-    const from = parseInt(String(fromNumRaw).trim(), 10);
-    const to = parseInt(String(toNumRaw).trim(), 10);
-    const size = parseInt(String(wildcardRaw).trim(), 10);
-    if (!Number.isFinite(from) || !Number.isFinite(to)) return { error: 'From and To accept numbers only.' };
-    if (!Number.isFinite(size) || size < 1 || size > 10) return { error: 'Wildcard size must be between 1 and 10.' };
-    if (from < 0 || to < 0) return { error: 'From and To must be 0 or higher.' };
-    if (from > 999999 || to > 999999) return { error: 'From and To must be 999999 or lower.' };
-    if (from > to) return { error: 'From must be less than or equal to To.' };
-    const count = to - from + 1;
-    if (count > BATCH_MAX_FILES) return { error: `Too many files (${count}). Narrow the range (max ${BATCH_MAX_FILES}).` };
-    return { urls: expandBatchUrls(p, mode, from, to, size, '', '') };
-  }
-  const fl = String(fromLetterRaw || '').trim();
-  const tl = String(toLetterRaw || '').trim();
-  if (!isSingleLetter(fl) || !isSingleLetter(tl)) {
-    return { error: 'From and To accept a single English letter (a–z).' };
-  }
-  const lowerFl = fl.toLowerCase() === fl;
-  const lowerTl = tl.toLowerCase() === tl;
-  if (lowerFl !== lowerTl) return { error: 'From and To must use the same case (a–z or A–Z).' };
-  const a = fl.charCodeAt(0);
-  const b = tl.charCodeAt(0);
-  if (a > b) return { error: 'From must come before To in the alphabet.' };
-  const count = b - a + 1;
-  if (count > BATCH_MAX_FILES) return { error: `Too many files (${count}). Narrow the range (max ${BATCH_MAX_FILES}).` };
-  return { urls: expandBatchUrls(p, mode, 0, 0, 1, fl, tl) };
-}
-
-function stepLetter(value: string, dir: 1 | -1): string {
-  const s = String(value || '').trim();
-  if (!isSingleLetter(s)) return dir > 0 ? 'a' : 'z';
-  const isLower = s.toLowerCase() === s;
-  const base = isLower ? 97 : 65;
-  const top = base + 25;
-  let c = s.charCodeAt(0) + dir;
-  if (c < base) c = base;
-  if (c > top) c = top;
-  return String.fromCharCode(c);
-}
-
-// Chrome Web Store plugin used to export a fresh cookies.txt while logged in.
-const COOKIE_EXPORTER_URL = 'https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc';
-// Full list of video/audio sites downloadable via yt-dlp (linked from New Download).
-const SUPPORTED_SITES_URL = 'https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md';
-/** Open an https URL in the OS browser (Electron) or a new tab (web preview). */
-async function openExternalUrl(url: string) {
-  try {
-    if (window.jetro?.openExternal) {
-      await window.jetro.openExternal(url);
-      return;
-    }
-    window.open(url, '_blank', 'noopener');
-  } catch {
-    try { window.open(url, '_blank', 'noopener'); } catch {}
-  }
-}
-
-// OS file icon — same icon File Explorer shows, via Electron app.getFileIcon.
-// Module-level cache by extension: backend already caches by ext, this avoids
-// N IPC round-trips per list paint for files sharing an extension.
-const iconCache = new Map<string, string | null>();
-function iconCacheKey(savePath: string, filename: string): string {
-  const base = (savePath || filename || 'file.bin').toLowerCase();
-  const i = base.lastIndexOf('.');
-  return i >= 0 ? base.slice(i) : '.bin';
-}
-function OsFileIcon({ item }: { item: Item }) {
-  const key = iconCacheKey(item.savePath, item.filename);
-  const [src, setSrc] = useState<string | null>(() => iconCache.get(key) ?? null);
-  const [miss, setMiss] = useState(() => !iconCache.has(key));
-  useEffect(() => {
-    if (!miss) return;
-    let alive = true;
-    if (!hasBackend()) return;
-    window
-      .jetro!.getFileIcon(item.savePath, item.filename)
-      .then((d) => {
-        iconCache.set(key, d);
-        if (alive) {
-          setSrc(d);
-          setMiss(false);
-        }
-      })
-      .catch(() => {
-        iconCache.set(key, null);
-        if (alive) setMiss(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [key, miss, item.savePath, item.filename]);
-  if (src) {
-    return (
-      <div className="file-icon">
-        <img src={src} alt="" draggable={false} />
-      </div>
-    );
-  }
-  return <div className="file-icon"><CategoryIcon cat={item.category} /></div>;
-}
-
-// ---------- Context-menu viewport clamping ----------
-// Menus are positioned at the click point, but near the right/bottom edge that
-// would push them outside the window. Clamp the anchor so the menu (at its
-// tallest scrollable size) always fits, then CSS max-height + overflow-y keeps
-// any taller content scrollable instead of clipped.
-const CTX_MARGIN = 8;
-function ctxCssMaxHeight(itemMenu: boolean): number {
-  if (typeof window === 'undefined') return 560;
-  const vhCap = window.innerHeight - CTX_MARGIN * 2;
-  if (itemMenu) return Math.max(120, Math.min(560, window.innerHeight * 0.7, vhCap));
-  return Math.max(120, Math.min(560, vhCap));
-}
-function clampCtxPos(clientX: number, clientY: number, w: number, h: number): { x: number; y: number } {
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const cw = Math.min(w, Math.max(120, vw - CTX_MARGIN * 2));
-  const ch = Math.min(h, Math.max(120, vh - CTX_MARGIN * 2));
-  return {
-    x: Math.max(CTX_MARGIN, Math.min(clientX, vw - cw - CTX_MARGIN)),
-    y: Math.max(CTX_MARGIN, Math.min(clientY, vh - ch - CTX_MARGIN)),
-  };
-}
-/** After mount, nudge the rendered menu back inside the viewport (covers font
- *  scaling / dynamic content taller than the estimate). Mutates style only. */
-function keepCtxMenuInViewport(el: HTMLElement | null) {
-  if (!el || typeof window === 'undefined') return;
-  const r = el.getBoundingClientRect();
-  let dx = 0;
-  let dy = 0;
-  if (r.right > window.innerWidth - CTX_MARGIN) dx = window.innerWidth - CTX_MARGIN - r.right;
-  if (r.bottom > window.innerHeight - CTX_MARGIN) dy = window.innerHeight - CTX_MARGIN - r.bottom;
-  if (r.left < CTX_MARGIN) dx = CTX_MARGIN - r.left;
-  if (r.top < CTX_MARGIN) dy = CTX_MARGIN - r.top;
-  if (dx) el.style.left = `${r.left + dx}px`;
-  if (dy) el.style.top = `${r.top + dy}px`;
-  if (el.getBoundingClientRect().height > window.innerHeight - CTX_MARGIN * 2) {
-    el.style.maxHeight = `${window.innerHeight - CTX_MARGIN * 2}px`;
-  }
-}
+import type { BatchMode, DetailColId, Item, Queue, QueuePowerAction, ThemeChoice, ViewMode } from '@/types';
+import {
+  fmtBytes,
+  fmtDetailSize,
+  fmtDetailStatus,
+  fmtEta,
+  fmtLastTry,
+  fmtLastTryTitle,
+  fmtSize,
+  fmtSpeed,
+  formatEtaSec,
+  itemPct,
+  lastTryOf,
+  speedLimitLabel,
+  statusColor,
+  statusLabel,
+} from '@/lib/format';
+import {
+  normalizeQueuePowerAction,
+  normalizeTime24h,
+  queuePowerOptions,
+  QUEUE_SCHED_DEFAULT_START,
+  QUEUE_SCHED_DEFAULT_STOP,
+  queuePowerLabel,
+  stripGlobalScheduler,
+} from '@/lib/schedule';
+import { CONNECTION_OPTIONS, normalizeConnectionOption, speedLimitOptions } from '@/lib/options';
+import { normalizeTheme, readInitialTheme, resolveTheme, THEME_KEY } from '@/lib/theme';
+import { LANG_KEY, useLanguage } from '@/locale/LanguageContext';
+import { SPEED_HISTORY_KEY } from '@/lib/speedHistoryStore';
+import {
+  DETAIL_COLS_DEFAULT,
+  DETAIL_LAYOUT_KEY,
+  DETAIL_MIN_WIDTH,
+  DETAIL_WIDTHS_DEFAULT,
+  readDetailLayout,
+  readViewMode,
+  VIEW_MODE_KEY,
+} from '@/lib/viewPrefs';
+import {
+  COOKIE_EXPORTER_URL,
+  extOf,
+  FILENAME_FALLBACK,
+  guessNameFromUrl,
+  isVideoPageUrl,
+  normalizeDownloadUrl,
+  sanitizeVideoFilename,
+  SUPPORTED_SITES_URL,
+} from '@/lib/url';
+import {
+  stepLetter,
+  validateBatchInput,
+} from '@/lib/batch';
+import { menuAnchor } from '@/lib/contextMenu';
+import { hasBackend, openExternalUrl } from '@/api/jetro';
+import OsFileIcon from '@/components/OsFileIcon';
+import DownloadAnalytics from '@/components/DownloadAnalytics';
+import useEscape from '@/hooks/useEscape';
+import useContextMenuNudge from '@/hooks/useContextMenuNudge';
+import useSpeedHistory from '@/hooks/useSpeedHistory';
 
 export default function App() {
+  const { t, lang, setLang, isRTL } = useLanguage();
+  const localeName = lang === 'fa' ? 'fa-IR-u-ca-persian' : undefined;
   const [items, setItems] = useState<Item[]>([]);
+  // Session speed history for the analytics view (avg / peak / graph).
+  const getSpeedStats = useSpeedHistory(items);
   const [queues, setQueues] = useState<Queue[]>([]);
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
@@ -652,9 +85,20 @@ export default function App() {
   const detailWidths = detailLayout.widths;
   const dragColRef = useRef<DetailColId | null>(null);
   const [dropCol, setDropCol] = useState<DetailColId | null>(null);
+  // Physical drop side on the hovered header (for the insertion indicator).
+  const [dropSide, setDropSide] = useState<'left' | 'right' | null>(null);
+  // Logical "insert after target" for the pending drop (derived from the
+  // pointer side + layout direction on dragover). Ref so onDrop reads fresh.
+  const dropAfterRef = useRef(false);
+  const dropSideRef = useRef<'left' | 'right' | null>(null);
   const resizeRef = useRef<{ col: DetailColId; startX: number; startW: number } | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // When Settings is opened from the New Download proxy guidance, scroll to
+  // and briefly highlight the Proxy section so the user lands in the right place.
+  const [settingsFocusProxy, setSettingsFocusProxy] = useState(false);
+  const [proxyHighlight, setProxyHighlight] = useState(false);
+  const proxySectionRef = useRef<HTMLDivElement | null>(null);
   const [newUrl, setNewUrl] = useState('');
   const [urlError, setUrlError] = useState('');
   const [newFilename, setNewFilename] = useState('');
@@ -675,6 +119,11 @@ export default function App() {
   const newUrlRef = useRef('');
   const settingsRef = useRef<any>(null);
   const pendingClipboardRef = useRef('');
+  // Browser-extension handoff (jetro://): open New Download + auto-resolve once
+  // per arrival. Direct files resolve via the existing debounced probe effect;
+  // video pages auto-run detectVideo() (yt-dlp) below.
+  const externalAutoRef = useRef<{ url: string; nonce: number } | null>(null);
+  const detectVideoRef = useRef<(() => Promise<void>) | null>(null);
   const [newConns, setNewConns] = useState(8);
   const [savePath, setSavePath] = useState('');
   const [newQueueId, setNewQueueId] = useState('');
@@ -703,6 +152,9 @@ export default function App() {
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoHint, setVideoHint] = useState('');
   const [videoDetail, setVideoDetail] = useState('');
+  // True when the last probe failure is proxy-relevant (network/unreachable or
+  // unknown error) — the UI then points at Settings > Proxy.
+  const [videoProxyHint, setVideoProxyHint] = useState(false);
   // Raw error log is hidden behind a "Show details" toggle (not pasted inline).
   const [showVideoDetail, setShowVideoDetail] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
@@ -725,9 +177,10 @@ export default function App() {
   const [cookieError, setCookieError] = useState('');
   const [binStatus, setBinStatus] = useState<BinaryStatus | null>(null);
   const [binRefreshing, setBinRefreshing] = useState(false);
-  const [settings, setSettings] = useState<any>({ maxConnections: 8, maxConcurrentDownloads: 3, downloadDir: '', speedLimitKBps: 0, proxyMode: 'none', proxyType: 'http', proxyHost: '', proxyPort: 8080, proxyUser: '', proxyPass: '', proxyBypass: 'localhost,127.0.0.1,::1', closeAction: 'ask', theme: 'system', autoCaptureClipboard: true, autoRetryEnabled: true, maxRetries: 3, retryDelaySec: 5, checkUpdatesOnStart: true });
+  const [settings, setSettings] = useState<any>({ maxConnections: 8, maxConcurrentDownloads: 3, downloadDir: '', speedLimitKBps: 0, proxyMode: 'system', proxyType: 'http', proxyHost: '', proxyPort: 8080, proxyUser: '', proxyPass: '', proxyBypass: 'localhost,127.0.0.1,::1', closeAction: 'ask', theme: 'system', autoCaptureClipboard: true, autoRetryEnabled: true, maxRetries: 3, retryDelaySec: 5, checkUpdatesOnStart: true });
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; updateAvailable: boolean; url: string; error?: string } | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
+  const [appVersion, setAppVersion] = useState('1.0.0');
   // Per-session dismissal for the update banner (reset when a newer tag appears).
   const [updateDismissed, setUpdateDismissed] = useState<string | null>(null);
   const showUpdateBanner = !!updateInfo?.updateAvailable && updateDismissed !== updateInfo.latest;
@@ -783,31 +236,42 @@ export default function App() {
     try { localStorage.setItem(DETAIL_LAYOUT_KEY, JSON.stringify(detailLayout)); } catch {}
   }, [detailLayout]);
   const setViewModeAndPersist = (m: ViewMode) => setViewMode(m);
-  const moveDetailCol = (from: DetailColId, to: DetailColId) => {
+  const moveDetailCol = (from: DetailColId, to: DetailColId, after = false) => {
     if (from === to) return;
     setDetailLayout((prev) => {
       const order = [...prev.order];
       const fi = order.indexOf(from);
-      const ti = order.indexOf(to);
+      let ti = order.indexOf(to);
       if (fi < 0 || ti < 0) return prev;
       order.splice(fi, 1);
-      order.splice(ti, 0, from);
+      // Removing an earlier item shifts the target down one slot.
+      if (fi < ti) ti -= 1;
+      order.splice(after ? ti + 1 : ti, 0, from);
       return { ...prev, order };
     });
+  };
+  const clearColDrop = () => {
+    dragColRef.current = null;
+    dropAfterRef.current = false;
+    dropSideRef.current = null;
+    setDropCol(null);
+    setDropSide(null);
   };
   const beginColResize = (e: React.MouseEvent, col: DetailColId) => {
     e.preventDefault();
     e.stopPropagation();
     // Disable header dragging while resizing so the two gestures never fight.
-    dragColRef.current = null;
-    setDropCol(null);
+    clearColDrop();
     const startX = e.clientX;
     const startW = detailWidths[col] ?? DETAIL_WIDTHS_DEFAULT[col];
     resizeRef.current = { col, startX, startW };
     const onMove = (ev: MouseEvent) => {
       const r = resizeRef.current;
       if (!r) return;
-      const next = Math.min(600, Math.max(DETAIL_MIN_WIDTH[r.col], Math.round(r.startW + (ev.clientX - r.startX))));
+      // The handle sits on the inline-end edge (right in LTR, left in RTL),
+      // so in RTL dragging left widens: flip the pointer delta.
+      const dx = ev.clientX - r.startX;
+      const next = Math.min(600, Math.max(DETAIL_MIN_WIDTH[r.col], Math.round(r.startW + (isRTL ? -dx : dx))));
       setDetailLayout((prev) => (prev.widths[r.col] === next ? prev : { ...prev, widths: { ...prev.widths, [r.col]: next } }));
     };
     const onUp = () => {
@@ -826,18 +290,30 @@ export default function App() {
   // settings draft + unsaved-changes guard (draft is edited, `settings` stays saved until Save)
   const [draftSettings, setDraftSettings] = useState<any | null>(null);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+  // Full app reset (danger zone at the end of Settings + confirm dialog).
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState('');
 
   // queue context menu + modals
   const [ctx, setCtx] = useState<{ x: number; y: number; queueId: string | null } | null>(null);
   // download item right-click menu
   const [itemCtx, setItemCtx] = useState<{ x: number; y: number; itemId: string } | null>(null);
-  const ctxMenuRef = useRef<HTMLDivElement | null>(null);
-  const itemMenuRef = useRef<HTMLDivElement | null>(null);
+  const ctxMenuRef = useContextMenuNudge(ctx);
+  // Re-nudge when the queue count changes: the item menu lists queues
+  // (move-to-queue), so its height depends on it.
+  const itemMenuRef = useContextMenuNudge(itemCtx, [queues.length]);
   const [renameState, setRenameState] = useState<{ id: string; name: string; error: string } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [propsId, setPropsId] = useState<string | null>(null);
+  // Per-download analytics modal (opened by double-click).
+  const [analyticsId, setAnalyticsId] = useState<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [pendingQueueMove, setPendingQueueMove] = useState<string | null>(null);
+  // Where a newly created queue should land when opened from a dropdown
+  // ("+ New queue…" inside New Download / video section). Null = default
+  // behavior (sidebar: jump filter there; item rows use pendingQueueMove).
+  const [queueCreateReturn, setQueueCreateReturn] = useState<null | 'newDownload' | 'video'>(null);
   const [showQueueModal, setShowQueueModal] = useState<null | { mode: 'create' | 'edit'; queueId?: string }>(null);
   const [qName, setQName] = useState('');
   const [qNameError, setQNameError] = useState('');
@@ -907,6 +383,9 @@ export default function App() {
       }
     }).catch(() => {});
     window.jetro!.listQueues().then(setQueues).catch(() => {});
+    window.jetro!.getVersion?.().then((v) => {
+      if (v) setAppVersion(String(v).replace(/^v/i, ''));
+    }).catch(() => {});
     const off1 = window.jetro!.onUpdate((incoming) => {
       if (!initialLoadDoneRef.current) {
         // First live payload arrived before list() resolved — its completed
@@ -952,6 +431,23 @@ export default function App() {
         secondsLeft: 60,
       });
     });
+    // Browser extension (jetro://add?url=..): focus already handled main-side.
+    // Open New Download pre-filled; auto-resolve runs in the effect below once
+    // newUrl state has flushed. Explicit user intent — always replaces.
+    const off7 = window.jetro!.onExternalUrl?.((info) => {
+      const url = String((info as any)?.url || '').trim();
+      if (!url || url.length > 2048 || /\s/.test(url)) return;
+      pendingClipboardRef.current = url;
+      filenameTouchedRef.current = false;
+      setUrlError('');
+      try {
+        setSavePath(settingsRef.current?.downloadDir || '');
+      } catch {}
+      setNewQueueId('');
+      setShowAdd(true);
+      setNewUrl(url);
+      externalAutoRef.current = { url, nonce: Date.now() + Math.random() };
+    });
     return () => {
       off1();
       off2();
@@ -959,6 +455,7 @@ export default function App() {
       off4?.();
       off5?.();
       off6?.();
+      off7?.();
     };
   }, []);
   useEffect(() => {
@@ -973,38 +470,16 @@ export default function App() {
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
-  useEffect(() => {
-    if (!ctx) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setCtx(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [ctx]);
-  useEffect(() => {
-    if (!itemCtx && !renameState && !propsId) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      if (renameState || propsId) return; // modals handle their own Escape
-      setItemCtx(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [itemCtx, renameState, propsId]);
+  useEscape(!!ctx, () => setCtx(null));
+  useEscape(!!(itemCtx || renameState || propsId || analyticsId), () => {
+    if (renameState || propsId || analyticsId) return; // modals handle their own Escape
+    setItemCtx(null);
+  });
   // Close the item menu if its download disappears.
   useEffect(() => {
     if (!itemCtx) return;
     if (!items.some((i) => i.id === itemCtx.itemId)) setItemCtx(null);
   }, [items, itemCtx]);
-  // Keep both right-click menus fully inside the window: after mount, measure
-  // the real height and nudge up/left when the click was near an edge. The
-  // menus stay scrollable via CSS so bottom options are always reachable.
-  useLayoutEffect(() => {
-    if (ctx) keepCtxMenuInViewport(ctxMenuRef.current);
-  }, [ctx]);
-  useLayoutEffect(() => {
-    if (itemCtx) keepCtxMenuInViewport(itemMenuRef.current);
-  }, [itemCtx, queues.length]);
 
   // Detect newly completed downloads and queue a popup.
   // Downloads already completed before this session was loaded are seeded
@@ -1044,14 +519,7 @@ export default function App() {
   }, [powerDialog]);
 
   // Escape dismisses the complete popup
-  useEffect(() => {
-    if (completedQueue.length === 0) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setCompletedQueue((prev) => prev.slice(1));
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [completedQueue.length]);
+  useEscape(completedQueue.length > 0, () => setCompletedQueue((prev) => prev.slice(1)));
 
   const queueMap = useMemo(() => new Map(queues.map((q) => [q.id, q])), [queues]);
   const queueById = (id: string | null | undefined) => (id ? queueMap.get(id) : undefined);
@@ -1087,6 +555,9 @@ export default function App() {
     const dir = sort.dir;
     const etaOf = (it: Item): number => {
       if (it.status === 'completed') return 0;
+      // Prefer the stabilized long-window ETA; fall back to instantaneous.
+      const stable = getSpeedStats(it.id).etaSec;
+      if (stable != null && Number.isFinite(stable)) return Math.max(0, stable);
       const sp = Number(it.speedBps || 0);
       if (sp <= 0 || !it.totalBytes) return Number.POSITIVE_INFINITY;
       return Math.max(0, (it.totalBytes - it.downloadedBytes) / sp);
@@ -1166,8 +637,8 @@ export default function App() {
 
   // ---------- New Batch Download logic ----------
   const batchValidation = useMemo(
-    () => validateBatchInput(batchUrl, batchMode, batchFromNum, batchToNum, batchWildcard, batchFromLetter, batchToLetter),
-    [batchUrl, batchMode, batchFromNum, batchToNum, batchWildcard, batchFromLetter, batchToLetter],
+    () => validateBatchInput(batchUrl, batchMode, batchFromNum, batchToNum, batchWildcard, batchFromLetter, batchToLetter, t.batchError),
+    [batchUrl, batchMode, batchFromNum, batchToNum, batchWildcard, batchFromLetter, batchToLetter, t],
   );
   const batchPreviewUrls = useMemo(() => batchValidation.urls || [], [batchValidation]);
   const batchFirst = batchPreviewUrls[0] || '';
@@ -1222,16 +693,16 @@ export default function App() {
         );
       }
     } catch (e: any) {
-      setBatchError(e?.message || 'Could not resolve these links.');
+      setBatchError(e?.message || t.batch.couldNotResolve);
     } finally {
       setBatchResolving(false);
     }
   };
 
   const handleBatchOk = async () => {
-    const v = validateBatchInput(batchUrl, batchMode, batchFromNum, batchToNum, batchWildcard, batchFromLetter, batchToLetter);
+    const v = validateBatchInput(batchUrl, batchMode, batchFromNum, batchToNum, batchWildcard, batchFromLetter, batchToLetter, t.batchError);
     if (v.error || !v.urls || !v.urls.length) {
-      setBatchError(v.error || 'Nothing to download.');
+      setBatchError(v.error || t.batch.nothingToAdd);
       return;
     }
     setBatchError('');
@@ -1244,10 +715,10 @@ export default function App() {
     const valid = batchRows.filter((r) => r.ok).map((r) => r.url);
     const toAdd = valid.length ? valid : batchUrls;
     if (!toAdd.length) {
-      setBatchError('Nothing to download.');
+      setBatchError(t.batch.nothingToAdd);
       return;
     }
-    if (!hasBackend()) { alert('Run via Electron (npm run app:dev) for real downloads.'); return; }
+    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
     setBatchAdding(true);
     setBatchError('');
     try {
@@ -1281,7 +752,7 @@ export default function App() {
       setBatchUrls([]);
       setBatchRows([]);
     } catch (e: any) {
-      setBatchError(e?.message || 'Could not add batch downloads.');
+      setBatchError(e?.message || t.batch.couldNotAdd);
     } finally {
       setBatchAdding(false);
     }
@@ -1299,23 +770,23 @@ export default function App() {
   const validateFilename = (name: string): string | null => {
     name = (name || '').trim();
     if (!name) {
-      setFilenameError('Please enter a file name.');
+      setFilenameError(t.filenameError.empty);
       return null;
     }
     if (name.length > 255) {
-      setFilenameError('File name is too long (max 255 characters).');
+      setFilenameError(t.filenameError.tooLong);
       return null;
     }
     if (/[<>:"/\\|?*]/.test(name) || /[\x00-\x1f]/.test(name)) {
-      setFilenameError('File name can\'t contain any of these characters: < > : " / \\ | ? *');
+      setFilenameError(t.filenameError.badChars);
       return null;
     }
     if (/[. ]$/.test(name)) {
-      setFilenameError('File name can\'t end with a space or dot.');
+      setFilenameError(t.filenameError.trailing);
       return null;
     }
     if (/^\.+$/.test(name)) {
-      setFilenameError('Please enter a valid file name.');
+      setFilenameError(t.filenameError.invalid);
       return null;
     }
     setFilenameError('');
@@ -1357,7 +828,7 @@ export default function App() {
   };
 
   const doAdd = async (u: string, finalName: string, presetSavePath?: string, presetQueueId?: string, replace = false) => {
-    if (!hasBackend()) { alert('Run via Electron (npm run app:dev) for real downloads.'); return; }
+    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
     setAdding(true);
     setUrlError('');
     try {
@@ -1380,7 +851,7 @@ export default function App() {
   };
 
   const startVideoDownload = async (pageUrl: string, filename: string, folder: string, height: number, kind: 'video' | 'audio' = 'video', replace = false, estimatedBytes?: number, queueId?: string) => {
-    if (!hasBackend()) { alert('Run via Electron (npm run app:dev) for real downloads.'); return; }
+    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
     setAdding(true);
     setUrlError('');
     try {
@@ -1412,14 +883,14 @@ export default function App() {
 
   const startPlaylistDownload = async () => {
     if (!playlist || playlistSelected.size === 0) {
-      setUrlError('Select at least one playlist entry.');
+      setUrlError(t.newDownload.needEntry);
       return;
     }
     if (!selectedVideoKind) {
-      setUrlError('Detect the video and select a quality first — it applies to every entry.');
+      setUrlError(t.newDownload.needEntryQuality);
       return;
     }
-    if (!hasBackend()) { alert('Run via Electron (npm run app:dev) for real downloads.'); return; }
+    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
     if (!cookiesReady()) return;
     setPlaylistAdding(true);
     setUrlError('');
@@ -1450,7 +921,7 @@ export default function App() {
         } catch {}
       }
       if (!added) {
-        setUrlError('Could not add playlist entries.');
+        setUrlError(t.newDownload.couldNotAddPlaylist);
         return;
       }
       resetAddDialog();
@@ -1520,13 +991,13 @@ export default function App() {
   };
 
   const addDl = async (url?: string, presetSavePath?: string, presetQueueId?: string) => {
-    if (!hasBackend()) { alert('Run via Electron (npm run app:dev) for real downloads.'); return; }
+    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
     // Video/audio path: a quality was picked from probeVideo.
     // - Progressive video: direct media URL via the segmented engine (fast).
     // - Split video or any audio: page URL via yt-dlp (download+merge/extract).
     if (!url && isVideoPageUrl(newUrl)) {
       if (!selectedVideoKind && !selectedVideoHeight && !selectedVideoUrl) {
-        setUrlError('Detect the video and select a quality below first.');
+        setUrlError(t.newDownload.needQuality);
         return;
       }
       if (!cookiesReady()) return;
@@ -1542,9 +1013,9 @@ export default function App() {
       }
       let direct: string;
       try {
-        direct = normalizeDownloadUrl(selectedVideoUrl);
+        direct = normalizeDownloadUrl(selectedVideoUrl, t.urlError);
       } catch (e: any) {
-        setUrlError(e?.message || 'Video link expired — detect again.');
+        setUrlError(e?.message || t.newDownload.linkExpired);
         return;
       }
       await requestAdd(direct, checkedV, presetSavePath, presetQueueId);
@@ -1552,17 +1023,17 @@ export default function App() {
     }
     const raw = (url || newUrl).trim();
     if (!raw) {
-      setUrlError('Please enter a download link.');
+      setUrlError(t.urlError.empty);
       return;
     }
     let u: string;
     try {
-      u = normalizeDownloadUrl(raw);
+      u = normalizeDownloadUrl(raw, t.urlError);
     } catch (e: any) {
-      setUrlError(e?.message || 'Please enter a valid link (e.g. example.com/file.zip).');
+      setUrlError(e?.message || t.urlError.invalid);
       return;
     }
-    if (!hasBackend()) { alert('Run via Electron (npm run app:dev) for real downloads.'); return; }
+    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
     // Make sure we know the original format before comparing: probe now if the
     // background probe hasn't answered yet (e.g. user clicked Download fast).
     // Untouched auto-fill follows the fresh probe result so a fast click on an
@@ -1655,11 +1126,15 @@ export default function App() {
     setShowVideoDetail(false);
   }, [videoDetail]);
 
-  // Autofill the address from clipboard only when the New Download dialog opens.
-  // Never auto-opens the dialog on startup/copy — the dialog is opened manually,
-  // then the current clipboard URL (if valid) fills the address box.
+  // Autofill the address from clipboard when the New Download dialog opens.
+  // Explicit paste-anywhere (see below) auto-opens the dialog; plain copies
+  // never auto-open — the dialog is opened manually, then the current
+  // clipboard URL (if valid) fills the address box.
   useEffect(() => {
     if (!showAdd) return;
+    // Browser-extension handoff wins: onExternalUrl already put the resolved
+    // link in the box — never let a slower clipboard read clobber it.
+    if (externalAutoRef.current) return;
     if (settingsRef.current && settingsRef.current.autoCaptureClipboard === false) return;
     let cancelled = false;
     const isValidUrl = (t: string): boolean => {
@@ -1706,6 +1181,83 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showAdd]);
 
+  // Pull the first valid download link out of pasted text (whole string first,
+  // then whitespace-separated tokens — handles "check this out: example.com/a.zip").
+  const extractPastedUrl = (text: string): string | null => {
+    const t = String(text || '').trim();
+    if (!t) return null;
+    if (t.length <= 2048 && !/\s/.test(t)) {
+      try {
+        normalizeDownloadUrl(t);
+        return t;
+      } catch {
+        // fall through to token scan
+      }
+    }
+    const tokens = t.split(/[\s"'<>]+/).map((s) => s.trim()).filter(Boolean).slice(0, 20);
+    for (const tok of tokens) {
+      const clean = tok.replace(/^[(\[]+|[.,;:!?)\]]+$/g, '').trim();
+      if (!clean || clean.length > 2048) continue;
+      try {
+        normalizeDownloadUrl(clean);
+        return clean;
+      } catch {
+        // not a link — try next token
+      }
+    }
+    return null;
+  };
+
+  // Paste-anywhere → New Download Link Address.
+  // Ctrl+V / right-click Paste with a link outside of text fields opens the
+  // New Download dialog (if closed) and puts the link in Link Address.
+  // Pasting directly into Link Address or any other input keeps native
+  // behavior so typing/searching/renaming is never hijacked.
+  useEffect(() => {
+    const isEditable = (el: EventTarget | null): boolean => {
+      if (!(el instanceof HTMLElement)) return false;
+      return !!el.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]');
+    };
+    const isLinkAddress = (el: EventTarget | null): boolean => {
+      if (!(el instanceof HTMLElement)) return false;
+      const input = el.closest('input');
+      return !!input && input.getAttribute('placeholder') === 'example.com/file.zip';
+    };
+    const onPaste = (e: ClipboardEvent) => {
+      // Direct pastes into Link Address already land there (see its onPaste cleaner).
+      if (isLinkAddress(e.target)) return;
+      // Never steal pastes meant for other text fields (search, file name,
+      // save folder, batch link, cookies, queue names, ...).
+      if (isEditable(e.target)) return;
+      let raw = '';
+      try {
+        raw = String(e.clipboardData?.getData('text') || '');
+      } catch {
+        raw = '';
+      }
+      if (!raw.trim()) return;
+      const url = extractPastedUrl(raw);
+      if (!url) return;
+      e.preventDefault();
+      pendingClipboardRef.current = url;
+      filenameTouchedRef.current = false;
+      setUrlError('');
+      if (!showAddRef.current) {
+        try {
+          setSavePath(settingsRef.current?.downloadDir || '');
+        } catch {
+          // keep current save path on failure
+        }
+        setNewQueueId('');
+        setShowAdd(true);
+      }
+      setNewUrl(url);
+    };
+    window.addEventListener('paste', onPaste as EventListener);
+    return () => window.removeEventListener('paste', onPaste as EventListener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Clear a previously picked video quality when the URL changes.
   // A new URL gets a fresh auto-resolve attempt, so hide the cookie box until
   // yt-dlp reports a login/cookie error for this URL (pasted cookies are kept).
@@ -1721,6 +1273,7 @@ export default function App() {
     setVideoHint('');
     setVideoDetail('');
     setVideoTitle('');
+    setVideoProxyHint(false);
     setNeedsCookies(false);
     setCookieError('');
     setPlaylist(null);
@@ -1736,6 +1289,7 @@ export default function App() {
     setVideoLoading(true);
     setVideoHint('');
     setVideoDetail('');
+    setVideoProxyHint(false);
     setCookieError('');
     setVideoFormats([]);
     setPlaylist(null);
@@ -1761,6 +1315,7 @@ export default function App() {
       setVideoFormats(fmts);
       setVideoHint(String(r?.hint || ''));
       setVideoDetail(String((r as any)?.detail || ''));
+      setVideoProxyHint(!!(r as any)?.proxyHint && fmts.length === 0);
       setVideoTitle(String((r as any)?.title || (pl as any)?.title || fmts[0]?.title || ''));
       if (fmts.length === 1) {
         const f = fmts[0];
@@ -1778,14 +1333,38 @@ export default function App() {
         setUrlError('');
       }
     } catch (e: any) {
-      setVideoHint('Could not detect video — check your internet connection and click Detect again.');
+      setVideoHint(t.newDownload.detectFailed);
       setVideoDetail('');
+      setVideoProxyHint(true);
     } finally {
       setVideoLoading(false);
     }
   };
 
-  // Video qualities are only detected when the Detect button is clicked (no auto-detect).
+  // Latest detectVideo for the extension auto-resolve effect (avoids stale closure).
+  detectVideoRef.current = detectVideo;
+
+  // Extension arrival: New Download is open + newUrl has flushed → auto-resolve.
+  // Video pages run yt-dlp Detect; direct files are covered by the debounced
+  // probe effect below, so no extra work is needed for them here.
+  useEffect(() => {
+    if (!showAdd) return;
+    const pending = externalAutoRef.current;
+    if (!pending) return;
+    if (newUrl.trim() !== pending.url.trim()) return;
+    externalAutoRef.current = null;
+    if (!isVideoPageUrl(pending.url)) return;
+    const t = setTimeout(() => {
+      try {
+        detectVideoRef.current?.()?.catch(() => {});
+      } catch {}
+    }, 150);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAdd, newUrl]);
+
+  // Video qualities are detected when the Detect button is clicked, plus
+  // auto-detect for browser-extension arrivals (see effect above).
 
   // Manual login cookies (cookies.txt): only used after yt-dlp reports a login/
   // cookie error. Probe/download otherwise resolve automatically with no cookies.
@@ -1801,7 +1380,7 @@ export default function App() {
   // False (after showing an error) when the cookie box is open but empty.
   const cookiesReady = (): boolean => {
     if (needsCookies && !cookiesText.trim() && !cookiesFile.trim()) {
-      setUrlError('Paste your cookies.txt content below or pick the cookies.txt file, then Detect again.');
+      setUrlError(t.newDownload.needCookies);
       return false;
     }
     return true;
@@ -1853,14 +1432,7 @@ export default function App() {
   }, [newUrl, showAdd]);
 
   // Escape dismisses the format-confirm dialog (back to the New Download dialog).
-  useEffect(() => {
-    if (!pendingFormatConfirm) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPendingFormatConfirm(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [pendingFormatConfirm]);
+  useEscape(!!pendingFormatConfirm, () => setPendingFormatConfirm(null));
 
   // Answer the main-process X-button request (styled close dialog).
   const decideClose = async (decision: 'minimize' | 'exit' | 'cancel') => {
@@ -1874,15 +1446,9 @@ export default function App() {
   };
 
   // Escape cancels the close dialog (stays open, same as Cancel).
-  useEffect(() => {
-    if (!showClosePrompt) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') decideClose('cancel');
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showClosePrompt, closeRemember]);
+  useEscape(showClosePrompt, () => {
+    decideClose('cancel');
+  });
 
   // ---------- queue actions (backend + web-preview fallback) ----------
   const refreshQueues = async () => {
@@ -1895,8 +1461,8 @@ export default function App() {
   const handleCreateQueue = async (name: string) => {
     const clean = name.trim();
     if (!clean) {
-      setQNameError('Queue name cannot be empty');
-      throw new Error('Queue name cannot be empty');
+      setQNameError(t.queueModal.nameEmpty);
+      throw new Error(t.queueModal.nameEmpty);
     }
     if (hasBackend()) {
       const q = await window.jetro!.createQueue(clean);
@@ -1930,7 +1496,7 @@ export default function App() {
   };
 
   const handleDeleteQueue = async (q: Queue) => {
-    if (!confirm(`Delete queue "${q.name}"?\nIts files will be kept under No queue (paused).`)) return;
+    if (!confirm(t.queueMenu.deleteConfirm(q.name))) return;
     if (hasBackend()) {
       await window.jetro!.deleteQueue(q.id);
       await refreshQueues();
@@ -1951,8 +1517,27 @@ export default function App() {
     setQSchedError('');
     setQPower('nothing');
     setPendingQueueMove(null);
+    setQueueCreateReturn(null);
     setShowQueueModal({ mode: 'create' });
     setCtx(null);
+  };
+
+  // Open the Create Queue modal from a queue dropdown ("+ New queue…").
+  // returnTarget decides where the new queue id lands on save; moveItemId
+  // moves an existing download into it (item rows).
+  const openCreateQueueFor = (returnTarget: null | 'newDownload' | 'video', moveItemId?: string | null) => {
+    setQName('');
+    setQNameError('');
+    setQSchedOn(false);
+    setQStart(QUEUE_SCHED_DEFAULT_START);
+    setQStop(QUEUE_SCHED_DEFAULT_STOP);
+    setQSchedError('');
+    setQPower('nothing');
+    setPendingQueueMove(moveItemId || null);
+    setQueueCreateReturn(returnTarget);
+    setShowQueueModal({ mode: 'create' });
+    setCtx(null);
+    setItemCtx(null);
   };
 
   const openEditModal = (q: Queue) => {
@@ -1971,14 +1556,14 @@ export default function App() {
     if (!enabled) return { start: QUEUE_SCHED_DEFAULT_START, stop: QUEUE_SCHED_DEFAULT_STOP, error: '' };
     const start = normalizeTime24h(startRaw);
     const stop = normalizeTime24h(stopRaw);
-    if (!start || !stop) return { start: start || '', stop: stop || '', error: 'Enter start and stop as HH:MM from 00:00 to 23:59.' };
+    if (!start || !stop) return { start: start || '', stop: stop || '', error: t.queueModal.scheduleError };
     return { start, stop, error: '' };
   };
 
   const saveQueueModal = async () => {
     const clean = qName.trim();
     if (!clean) {
-      setQNameError('Queue name cannot be empty');
+      setQNameError(t.queueModal.nameEmpty);
       return;
     }
     setQNameError('');
@@ -2003,11 +1588,18 @@ export default function App() {
         } else if (q) {
           setQueues((p) => p.map((x) => (x.id === q.id ? { ...x, schedulerEnabled: qSchedOn, scheduleStart: sched.start, scheduleStop: sched.stop, afterComplete: qPower } : x)));
         }
-        // Created from a download's right-click menu: move that download in.
+        // Created from a download's right-click menu / item row dropdown: move in.
         if (q && pendingQueueMove) {
           await moveItemToQueue(pendingQueueMove, q.id);
           setPendingQueueMove(null);
-        } else if (q && !pendingQueueMove) {
+          setQueueCreateReturn(null);
+        } else if (q && queueCreateReturn === 'newDownload') {
+          setNewQueueId(q.id);
+          setQueueCreateReturn(null);
+        } else if (q && queueCreateReturn === 'video') {
+          setVideoQueueId(q.id);
+          setQueueCreateReturn(null);
+        } else if (q && !pendingQueueMove && !queueCreateReturn) {
           setFilter(`queue:${q.id}`);
         }
       } else if (showQueueModal?.mode === 'edit' && showQueueModal.queueId) {
@@ -2027,7 +1619,7 @@ export default function App() {
       }
       setShowQueueModal(null);
     } catch (e: any) {
-      const msg = e?.message || 'Could not save queue';
+      const msg = e?.message || t.queueModal.couldNotSave;
       if (/HH:MM|24-hour|Start|Stop/i.test(msg)) setQSchedError(msg);
       else setQNameError(msg);
     }
@@ -2038,7 +1630,7 @@ export default function App() {
       try {
         await window.jetro!.moveToQueue(itemId, queueId);
       } catch (e: any) {
-        alert(e?.message || 'Could not move (maybe downloading). Pause it first.');
+        alert(e?.message || t.itemMenu.couldNotMove);
       }
       return;
     }
@@ -2051,8 +1643,7 @@ export default function App() {
     setItemCtx(null);
     // Clamp against the tallest the menu can be (scrollable), so a click near
     // the bottom edge still leaves the whole menu reachable.
-    const { x, y } = clampCtxPos(e.clientX, e.clientY, 230, ctxCssMaxHeight(false));
-    setCtx({ x, y, queueId });
+    setCtx({ ...menuAnchor(e, false), queueId });
   };
 
   // ---------- download item right-click menu ----------
@@ -2061,8 +1652,7 @@ export default function App() {
     e.stopPropagation();
     setSelectedId(it.id);
     setCtx(null);
-    const { x, y } = clampCtxPos(e.clientX, e.clientY, 264, ctxCssMaxHeight(true));
-    setItemCtx({ x, y, itemId: it.id });
+    setItemCtx({ ...menuAnchor(e, true), itemId: it.id });
   };
 
   const itemCtxItem = itemCtx ? items.find((i) => i.id === itemCtx.itemId) || null : null;
@@ -2079,7 +1669,7 @@ export default function App() {
         else await window.jetro!.openFile(it.savePath);
       } else await window.jetro!.revealInFolder(it.savePath);
     } catch (e: any) {
-      alert(e?.message || 'Could not open file');
+      alert(e?.message || t.common.couldNotOpenFile);
     }
   };
 
@@ -2094,27 +1684,27 @@ export default function App() {
     if (!renameState || renaming) return;
     const name = (renameState.name || '').trim();
     if (!name) {
-      setRenameState({ ...renameState, error: 'Please enter a file name.' });
+      setRenameState({ ...renameState, error: t.filenameError.empty });
       return;
     }
     if (name.length > 255) {
-      setRenameState({ ...renameState, error: 'File name is too long (max 255 characters).' });
+      setRenameState({ ...renameState, error: t.filenameError.tooLong });
       return;
     }
     if (/[<>:"/\\|?*]/.test(name) || /[\x00-\x1f]/.test(name)) {
-      setRenameState({ ...renameState, error: 'File name can\'t contain any of these characters: < > : " / \\ | ? *' });
+      setRenameState({ ...renameState, error: t.filenameError.badChars });
       return;
     }
     if (/[. ]$/.test(name)) {
-      setRenameState({ ...renameState, error: 'File name can\'t end with a space or dot.' });
+      setRenameState({ ...renameState, error: t.filenameError.trailing });
       return;
     }
     if (/^\.+$/.test(name)) {
-      setRenameState({ ...renameState, error: 'Please enter a valid file name.' });
+      setRenameState({ ...renameState, error: t.filenameError.invalid });
       return;
     }
     if (!hasBackend()) {
-      setRenameState({ ...renameState, error: 'Run via Electron (npm run app:dev) to rename files.' });
+      setRenameState({ ...renameState, error: t.renameModal.needElectron });
       return;
     }
     setRenaming(true);
@@ -2122,7 +1712,7 @@ export default function App() {
       await window.jetro!.renameDownload(renameState.id, name);
       setRenameState(null);
     } catch (e: any) {
-      setRenameState({ ...renameState, error: e?.message || 'Could not rename file.' });
+      setRenameState({ ...renameState, error: e?.message || t.renameModal.couldNotRename });
     } finally {
       setRenaming(false);
     }
@@ -2135,7 +1725,7 @@ export default function App() {
     try {
       await window.jetro!.redownload(it.id);
     } catch (e: any) {
-      alert(e?.message || 'Could not restart download.');
+      alert(e?.message || t.itemMenu.couldNotRestart);
     }
   };
 
@@ -2146,7 +1736,7 @@ export default function App() {
     try {
       await window.jetro!.refreshDownload(it.id);
     } catch (e: any) {
-      alert(e?.message || 'Could not refresh download.');
+      alert(e?.message || t.itemMenu.couldNotRefresh);
     } finally {
       setRefreshingId(null);
       setItemCtx(null);
@@ -2189,13 +1779,37 @@ export default function App() {
   }, [showSettings]);
 
   // ---------- settings open / save / cancel with unsaved-changes guard ----------
-  const openSettings = () => {
+  const openSettings = (opts?: { focusProxy?: boolean }) => {
     const copy = stripGlobalScheduler(JSON.parse(JSON.stringify(settings)));
     copy.theme = normalizeTheme(copy.theme);
     setDraftSettings(copy);
     setShowDiscardConfirm(false);
+    setSettingsFocusProxy(!!opts?.focusProxy);
+    setProxyHighlight(false);
     setShowSettings(true);
   };
+
+  // Deep-link from New Download's proxy guidance: scroll the Proxy section
+  // into view and flash a highlight so the user knows where to look.
+  // The New Download dialog stays open underneath (Settings stacks on top).
+  const openProxySettings = () => openSettings({ focusProxy: true });
+
+  useEffect(() => {
+    if (!showSettings || !settingsFocusProxy) return;
+    setSettingsFocusProxy(false);
+    setProxyHighlight(true);
+    const t = setTimeout(() => {
+      try {
+        proxySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch {}
+    }, 60);
+    const h = setTimeout(() => setProxyHighlight(false), 2400);
+    return () => {
+      clearTimeout(t);
+      clearTimeout(h);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSettings]);
 
   const isSettingsDirty = useMemo(() => {
     if (!showSettings || !draftSettings) return false;
@@ -2239,34 +1853,48 @@ export default function App() {
     setDraftSettings(null);
   };
 
-  // Escape in Settings: dismiss discard-confirm first, otherwise attempt close (asks if dirty)
-  useEffect(() => {
-    if (!showSettings) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      if (showDiscardConfirm) setShowDiscardConfirm(false);
-      else attemptCloseSettings();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showSettings, showDiscardConfirm, draftSettings, settings]);
+  // Danger zone: wipe backend state (downloads, queues, settings) + local
+  // UI prefs, then reload into a fresh-install state.
+  const handleResetAll = async () => {
+    if (resetting) return;
+    setResetting(true);
+    setResetError('');
+    try {
+      if (hasBackend()) await window.jetro!.resetAll();
+      try {
+        for (const k of [LANG_KEY, THEME_KEY, VIEW_MODE_KEY, DETAIL_LAYOUT_KEY, SPEED_HISTORY_KEY]) {
+          localStorage.removeItem(k);
+        }
+      } catch {}
+      window.location.reload();
+    } catch (e: any) {
+      setResetError(e?.message || String(e));
+      setResetting(false);
+    }
+  };
+
+  // Escape in Settings: dismiss reset/discard confirms first, otherwise attempt close (asks if dirty)
+  useEscape(showSettings, () => {
+    if (showResetConfirm) setShowResetConfirm(false);
+    else if (showDiscardConfirm) setShowDiscardConfirm(false);
+    else attemptCloseSettings();
+  });
 
   const statusNav: { key: string; label: string; Icon: typeof FiInbox }[] = [
-    { key: 'all', label: 'All', Icon: FiInbox },
-    { key: 'downloading', label: 'Downloading', Icon: FiArrowDown },
-    { key: 'completed', label: 'Completed', Icon: FiCheckCircle },
-    { key: 'failed', label: 'Failed', Icon: FiXCircle },
-    { key: 'paused', label: 'Paused', Icon: FiPause },
-    { key: 'queued', label: 'Queued', Icon: FiClock },
+    { key: 'all', label: t.sidebar.all, Icon: FiInbox },
+    { key: 'downloading', label: t.sidebar.downloading, Icon: FiArrowDown },
+    { key: 'completed', label: t.sidebar.completed, Icon: FiCheckCircle },
+    { key: 'failed', label: t.sidebar.failed, Icon: FiXCircle },
+    { key: 'paused', label: t.sidebar.paused, Icon: FiPause },
+    { key: 'queued', label: t.sidebar.queued, Icon: FiClock },
   ];
 
   const categoryNav: { key: string; label: string; Icon: typeof FiBox }[] = [
-    { key: 'cat-video', label: 'Video', Icon: FiFilm },
-    { key: 'cat-documents', label: 'Documents', Icon: FiFileText },
-    { key: 'cat-archives', label: 'Archives', Icon: FiArchive },
-    { key: 'cat-software', label: 'Software', Icon: FiDisc },
-    { key: 'cat-others', label: 'Others', Icon: FiBox },
+    { key: 'cat-video', label: t.sidebar.video, Icon: FiFilm },
+    { key: 'cat-documents', label: t.sidebar.documents, Icon: FiFileText },
+    { key: 'cat-archives', label: t.sidebar.archives, Icon: FiArchive },
+    { key: 'cat-software', label: t.sidebar.software, Icon: FiDisc },
+    { key: 'cat-others', label: t.sidebar.others, Icon: FiBox },
   ];
 
   const ctxQueue = ctx?.queueId ? queueById(ctx.queueId) : null;
@@ -2295,57 +1923,23 @@ export default function App() {
   }, [items, pendingRemove]);
 
   // Escape dismisses the remove-confirm dialog
-  useEffect(() => {
-    if (!pendingRemove) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPendingRemove(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [pendingRemove]);
+  useEscape(!!pendingRemove, () => setPendingRemove(null));
 
   // Escape dismisses rename / properties dialogs
-  useEffect(() => {
-    if (!renameState && !propsId) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      if (renameState && !renaming) setRenameState(null);
-      else if (propsId) setPropsId(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [renameState, propsId, renaming]);
+  useEscape(!!(renameState || propsId), () => {
+    if (renameState && !renaming) setRenameState(null);
+    else if (propsId) setPropsId(null);
+  });
+  useEscape(!!analyticsId, () => setAnalyticsId(null));
 
   // Escape dismisses the file-exists dialog
-  useEffect(() => {
-    if (!pendingCollision) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPendingCollision(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [pendingCollision]);
+  useEscape(!!pendingCollision, () => setPendingCollision(null));
 
   // close queue dropdown on escape
-  useEffect(() => {
-    if (!queueMenu) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setQueueMenu(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [queueMenu]);
+  useEscape(!!queueMenu, () => setQueueMenu(null));
 
   // Escape dismisses the batch dialogs (not while resolving/adding)
-  useEffect(() => {
-    if (!showBatch) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeBatch();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showBatch, batchResolving, batchAdding]);
+  useEscape(showBatch, () => closeBatch());
 
   const handleResumeSelected = () => {
     if (!canResume || !selected) return;
@@ -2370,7 +1964,7 @@ export default function App() {
       <div className="app-bg" />
       <div className="app-shell">
         <aside className="sidebar">
-          <div className="logo"><img src={jetroLogo} alt="Jetro" className="logo-img" draggable={false} /><span className="logo-text">Jetro</span><span className="logo-version">v0.2.0</span><button className="logo-settings-btn" title="Settings" onClick={openSettings}><FiSettings size={16} /></button></div>
+          <div className="logo"><img src={jetroLogo} alt="Jetro" className="logo-img" draggable={false} /><span className="logo-text">Jetro</span><span className="logo-version">v{updateInfo?.current || appVersion}</span><button className="logo-settings-btn" title={t.sidebar.settingsTitle} onClick={() => openSettings()}><FiSettings size={16} /></button></div>
           <div className="sidebar-nav">
             {statusNav.map(({ key, label, Icon }) => (
               <div key={key} className={'nav-item' + (filter === key ? ' active' : '')} onClick={() => setFilter(key)}>
@@ -2378,7 +1972,7 @@ export default function App() {
                 <span className="nav-count">{counts(key)}</span>
               </div>
             ))}
-            <div className="nav-section">Categories</div>
+            <div className="nav-section">{t.sidebar.categories}</div>
             {categoryNav.map(({ key, label, Icon }) => (
               <div key={key} className={'nav-item' + (filter === key ? ' active' : '')} onClick={() => setFilter(key)}>
                 <span className="nav-label"><Icon className="nav-icon" />{label}</span>
@@ -2388,10 +1982,10 @@ export default function App() {
             <div
               className="nav-section row-between"
               onContextMenu={(e) => openCtx(e, null)}
-              title="Right-click for queue options"
+              title={t.sidebar.queueOptionsTitle}
             >
-              <span>Queues</span>
-              <button className="nav-add-btn" title="Create new queue" onClick={openCreateModal}><FiPlus size={13} /></button>
+              <span>{t.sidebar.queues}</span>
+              <button className="nav-add-btn" title={t.sidebar.createQueueTitle} onClick={openCreateModal}><FiPlus size={13} /></button>
             </div>
             {queues.map((q) => {
               const key = `queue:${q.id}`;
@@ -2404,7 +1998,7 @@ export default function App() {
                   className={'nav-item' + (filter === key ? ' active' : '')}
                   onClick={() => setFilter(key)}
                   onContextMenu={(e) => openCtx(e, q.id)}
-                  title={`Right-click: Start/Stop, Edit, Delete\n${q.running ? 'Running' : 'Stopped'}${schedLabel}`}
+                  title={t.sidebar.queueTooltip(q.running ? t.sidebar.queueRunning : t.sidebar.queueStopped, schedLabel)}
                 >
                   <span className={'queue-dot' + (q.running ? ' running' : '')} />
                   <span className="nav-label"><FiLayers className="nav-icon" />{q.name}</span>
@@ -2417,24 +2011,24 @@ export default function App() {
             <div className={'speed-meter' + (totalSpeed > 0 ? ' active' : '')}>
               <div className="speed-meter-icon"><FiArrowDown size={16} /></div>
               <div className="speed-meter-info">
-                <div className="speed-meter-label">Download speed</div>
+                <div className="speed-meter-label">{t.sidebar.downloadSpeed}</div>
                 <div className="speed-meter-value">{fmtSpeed(totalSpeed)}</div>
               </div>
               <span className={'speed-meter-dot' + (totalSpeed > 0 ? ' live' : '')} />
             </div>
-            <div className="sidebar-path"><FiHardDrive className="inline-icon" /> {settings.downloadDir || '…'}</div>
+            <div className="sidebar-path" dir="ltr"><FiHardDrive className="inline-icon" /> {settings.downloadDir || '…'}</div>
           </div>
         </aside>
 
         <div className="main">
           <div className="topbar">
-            <button className="btn btn-primary" onClick={() => { setSavePath(settings.downloadDir || ''); setNewQueueId(''); setUrlError(''); setShowAdd(true); }}><FiPlus className="btn-icon" /> New Download</button>
-            <button className="btn" title="Add many file parts at once with a * pattern" onClick={openBatch}><FiLayers className="btn-icon" /> New Batch Download</button>
-            <input className="search" placeholder="Search downloads…" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <button className="btn btn-primary" onClick={() => { setSavePath(settings.downloadDir || ''); setNewQueueId(''); setUrlError(''); setShowAdd(true); }}><FiPlus className="btn-icon" /> {t.topbar.newDownload}</button>
+            <button className="btn" title={t.topbar.newBatchTitle} onClick={openBatch}><FiLayers className="btn-icon" /> {t.topbar.newBatch}</button>
+            <input className="search" dir="auto" placeholder={t.topbar.searchPlaceholder} value={query} onChange={(e) => setQuery(e.target.value)} />
             <button
               className="theme-toggle"
-              title={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-              aria-label={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={resolvedTheme === 'dark' ? t.topbar.toLight : t.topbar.toDark}
+              aria-label={resolvedTheme === 'dark' ? t.topbar.toLight : t.topbar.toDark}
               onClick={toggleTheme}
             >
               {resolvedTheme === 'dark' ? <FiSun size={17} /> : <FiMoon size={17} />}
@@ -2442,63 +2036,63 @@ export default function App() {
           </div>
 
           <div className="toolbar">
-            <button className="btn" disabled={!canResume} title={canResume ? `Resume ${selected?.filename}` : 'Select a paused or failed download'} onClick={handleResumeSelected}><FiPlay className="btn-icon" /> Resume</button>
-            <button className="btn" disabled={!canStop} title={canStop ? `Stop ${selected?.filename}` : 'Select an active download'} onClick={handleStopSelected}><FiPause className="btn-icon" /> Stop</button>
-            <button className="btn" disabled={!canStopAll} title={canStopAll ? 'Stop all active downloads' : 'No active downloads'} onClick={handleStopAll}><FiSquare className="btn-icon" /> Stop All</button>
+            <button className="btn" disabled={!canResume} title={canResume && selected ? t.toolbar.resumeTitleReady(selected.filename) : t.toolbar.resumeTitleIdle} onClick={handleResumeSelected}><FiPlay className="btn-icon" /> {t.common.resume}</button>
+            <button className="btn" disabled={!canStop} title={canStop && selected ? t.toolbar.stopTitleReady(selected.filename) : t.toolbar.stopTitleIdle} onClick={handleStopSelected}><FiPause className="btn-icon" /> {t.common.stop}</button>
+            <button className="btn" disabled={!canStopAll} title={canStopAll ? t.toolbar.stopAllReady : t.toolbar.stopAllIdle} onClick={handleStopAll}><FiSquare className="btn-icon" /> {t.toolbar.stopAll}</button>
             <span className="toolbar-sep" />
             <div className="toolbar-dropdown">
-              <button className="btn" title="Start a queue" onClick={() => setQueueMenu(queueMenu === 'start' ? null : 'start')}><FiPlay className="btn-icon" /> Start Queue <FiChevronDown className="btn-icon" /></button>
+              <button className="btn" title={t.toolbar.startQueueTitle} onClick={() => setQueueMenu(queueMenu === 'start' ? null : 'start')}><FiPlay className="btn-icon" /> {t.toolbar.startQueue} <FiChevronDown className="btn-icon" /></button>
               {queueMenu === 'start' && (
                 <>
                   <div className="dropdown-backdrop" onClick={() => setQueueMenu(null)} />
                   <div className="dropdown-menu">
-                    {queues.length === 0 && <div className="dropdown-empty">No queues yet</div>}
+                    {queues.length === 0 && <div className="dropdown-empty">{t.toolbar.noQueues}</div>}
                     {queues.map((q) => (
                       <button
                         key={q.id}
                         className="ctx-item"
                         disabled={q.running}
-                        title={q.running ? `"${q.name}" is already running` : `Start "${q.name}"`}
+                        title={q.running ? t.toolbar.alreadyRunning(q.name) : t.toolbar.startNamed(q.name)}
                         onClick={() => {
                           handleStartStopQueue(q);
                           setQueueMenu(null);
                         }}
-                      ><FiPlay className="btn-icon" /> {q.name}{q.running ? ' (running)' : ''}</button>
+                      ><FiPlay className="btn-icon" /> {q.name}{q.running ? t.common.runningSuffix : ''}</button>
                     ))}
                   </div>
                 </>
               )}
             </div>
             <div className="toolbar-dropdown">
-              <button className="btn" title="Stop a running queue" onClick={() => setQueueMenu(queueMenu === 'stop' ? null : 'stop')}><FiSquare className="btn-icon" /> Stop Queue <FiChevronDown className="btn-icon" /></button>
+              <button className="btn" title={t.toolbar.stopQueueTitle} onClick={() => setQueueMenu(queueMenu === 'stop' ? null : 'stop')}><FiSquare className="btn-icon" /> {t.toolbar.stopQueue} <FiChevronDown className="btn-icon" /></button>
               {queueMenu === 'stop' && (
                 <>
                   <div className="dropdown-backdrop" onClick={() => setQueueMenu(null)} />
                   <div className="dropdown-menu">
-                    {queues.length === 0 && <div className="dropdown-empty">No queues yet</div>}
+                    {queues.length === 0 && <div className="dropdown-empty">{t.toolbar.noQueues}</div>}
                     {queues.map((q) => (
                       <button
                         key={q.id}
                         className="ctx-item"
                         disabled={!q.running}
-                        title={q.running ? `Stop "${q.name}"` : `"${q.name}" is not running`}
+                        title={q.running ? t.toolbar.stopNamed(q.name) : t.toolbar.notRunning(q.name)}
                         onClick={() => {
                           handleStartStopQueue(q);
                           setQueueMenu(null);
                         }}
-                      ><FiSquare className="btn-icon" /> {q.name}{q.running ? '' : ' (stopped)'}</button>
+                      ><FiSquare className="btn-icon" /> {q.name}{q.running ? '' : t.common.stoppedSuffix}</button>
                     ))}
                   </div>
                 </>
               )}
             </div>
             <span className="toolbar-spacer" />
-            <div className="view-toggle" role="radiogroup" aria-label="Downloads viewing mode">
+            <div className="view-toggle" role="radiogroup" aria-label={t.toolbar.viewModeLabel}>
               <button
                 type="button"
                 role="radio"
                 aria-checked={viewMode === 'cards'}
-                title="Card view"
+                title={t.toolbar.cardView}
                 className={'view-toggle-btn' + (viewMode === 'cards' ? ' active' : '')}
                 onClick={() => setViewModeAndPersist('cards')}
               ><FiGrid size={15} /></button>
@@ -2506,7 +2100,7 @@ export default function App() {
                 type="button"
                 role="radio"
                 aria-checked={viewMode === 'details'}
-                title="Details view (small list like File Explorer)"
+                title={t.toolbar.detailsView}
                 className={'view-toggle-btn' + (viewMode === 'details' ? ' active' : '')}
                 onClick={() => setViewModeAndPersist('details')}
               ><FiList size={15} /></button>
@@ -2516,12 +2110,12 @@ export default function App() {
           {showUpdateBanner && updateInfo && (
             <div className="card" style={{ justifyContent: 'space-between', alignItems: 'center', borderColor: 'var(--green-soft-border)', background: 'var(--green-soft-bg)' }}>
               <div>
-                <b><FiDownloadCloud className="inline-icon" /> v{updateInfo.latest} available</b>{' '}
-                <span className="queue-meta">you have v{updateInfo.current} — see what&apos;s new on GitHub</span>
+                <b><FiDownloadCloud className="inline-icon" /> {t.updateBanner.available(updateInfo.latest)}</b>{' '}
+                <span className="queue-meta">{t.updateBanner.have(updateInfo.current)}</span>
               </div>
               <div className="row" style={{ flexWrap: 'wrap' }}>
-                <button className="btn btn-small btn-primary" onClick={() => openExternalUrl(updateInfo.url || 'https://github.com/Erkalin/Jetro/releases')}><FiExternalLink className="btn-icon" /> Download</button>
-                <button className="btn btn-small" onClick={() => setUpdateDismissed(updateInfo.latest)}>Later</button>
+                <button className="btn btn-small btn-primary" onClick={() => openExternalUrl(updateInfo.url || 'https://github.com/Erkalin/Jetro/releases')}><FiExternalLink className="btn-icon" /> {t.updateBanner.download}</button>
+                <button className="btn btn-small" onClick={() => setUpdateDismissed(updateInfo.latest)}>{t.common.later}</button>
               </div>
             </div>
           )}
@@ -2561,42 +2155,42 @@ export default function App() {
                 }
               } catch {}
             }}
-            title="Drop links or a .txt file to add downloads"
+            title={t.list.dropTitle}
           >
             {filter.startsWith('queue:') && (
               <div className="card" style={{ justifyContent: 'space-between' }}>
-                <div>
-                  <b className="queue-title"><FiLayers className="inline-icon" /> {queueById(filter.slice(6))?.name || 'Queue'}</b>{' '}
-                  <span className="badge green">{queueById(filter.slice(6))?.running ? 'Running' : 'Stopped'}</span>{' '}
+                <div className="queue-header-info">
+                  <b className="queue-title"><FiLayers className="inline-icon" /> {queueById(filter.slice(6))?.name || t.list.queueFallback}</b>
+                  <span className={queueById(filter.slice(6))?.running ? 'badge green' : 'badge red'}>{queueById(filter.slice(6))?.running ? t.common.runningBadge : t.common.stoppedBadge}</span>
                   {normalizeQueuePowerAction(queueById(filter.slice(6))?.afterComplete) !== 'nothing' && (
-                    <span className="badge">⏻ {queuePowerLabel(queueById(filter.slice(6))?.afterComplete)} on finish</span>
-                  )}{' '}
+                    <span className="badge">{t.list.onFinish(queuePowerLabel(queueById(filter.slice(6))?.afterComplete, t.power))}</span>
+                  )}
                   <span className="queue-meta">
-                    {counts(filter)} files
+                    {t.common.files(counts(filter))}
                     {(() => {
                       const qd = queueById(filter.slice(6));
                       if (!qd?.schedulerEnabled) return '';
                       const s = normalizeTime24h(qd.scheduleStart) || QUEUE_SCHED_DEFAULT_START;
                       const e = normalizeTime24h(qd.scheduleStop) || QUEUE_SCHED_DEFAULT_STOP;
-                      return ` • schedule ${s}–${e} (24h)`;
+                      return t.list.schedule(s, e);
                     })()}
                   </span>
                 </div>
                 <div className="row">
                   {queueById(filter.slice(6))?.running ? (
-                    <button className="btn" onClick={() => queueById(filter.slice(6)) && handleStartStopQueue(queueById(filter.slice(6))!)}><FiSquare className="btn-icon" /> Stop</button>
+                    <button className="btn" onClick={() => queueById(filter.slice(6)) && handleStartStopQueue(queueById(filter.slice(6))!)}><FiSquare className="btn-icon" /> {t.common.stop}</button>
                   ) : (
-                    <button className="btn btn-primary" onClick={() => queueById(filter.slice(6)) && handleStartStopQueue(queueById(filter.slice(6))!)}><FiPlay className="btn-icon" /> Start</button>
+                    <button className="btn btn-primary" onClick={() => queueById(filter.slice(6)) && handleStartStopQueue(queueById(filter.slice(6))!)}><FiPlay className="btn-icon" /> {t.common.start}</button>
                   )}
-                  <button className="btn" onClick={() => queueById(filter.slice(6)) && openEditModal(queueById(filter.slice(6))!)}>Edit</button>
+                  <button className="btn" onClick={() => queueById(filter.slice(6)) && openEditModal(queueById(filter.slice(6))!)}>{t.common.edit}</button>
                 </div>
               </div>
             )}
             {filtered.length === 0 && (
               <div className="card"><div className="empty" style={{ width: '100%' }}>
                 <div className="empty-big"><FiDownloadCloud size={48} /></div>
-                <div className="empty-title">No downloads here</div>
-                <div>Paste a link — Jetro will ask where to save and split it into {settings.maxConnections} parallel segments for faster downloads.</div>
+                <div className="empty-title">{t.list.emptyTitle}</div>
+                <div>{t.list.emptyHint(settings.maxConnections)}</div>
               </div></div>
             )}
             {viewMode === 'details' && filtered.length > 0 && (
@@ -2605,9 +2199,12 @@ export default function App() {
                   {detailOrder.map((col) => (
                     <div
                       key={col}
-                      className={'details-th' + (dropCol === col ? ' drop-target' : '')}
+                      className={
+                        'details-th' +
+                        (dropCol === col ? (dropSide === 'right' ? ' drop-right' : ' drop-left') : '')
+                      }
                       draggable
-                      title={`${DETAIL_COL_LABELS[col]} — click to sort, drag to reorder`}
+                      title={t.list.colSortTitle(t.detailCols[col])}
                       onClick={() => setSort((prev) => {
                         if (!prev || prev.col !== col) return { col, dir: 1 };
                         if (prev.dir === 1) return { col, dir: -1 };
@@ -2619,9 +2216,27 @@ export default function App() {
                       }}
                       onDragOver={(e) => {
                         e.preventDefault();
-                        if (dragColRef.current && dragColRef.current !== col) setDropCol(col);
+                        if (!dragColRef.current || dragColRef.current === col) return;
+                        // Position-aware insertion: which physical half of the
+                        // target is the pointer over? In LTR the right half
+                        // means "after"; in RTL the visual flow is mirrored.
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const visualAfter = rect.width > 0 && e.clientX - rect.left > rect.width / 2;
+                        const side = visualAfter ? 'right' : 'left';
+                        dropAfterRef.current = isRTL ? !visualAfter : visualAfter;
+                        if (dropCol !== col) setDropCol(col);
+                        if (dropSideRef.current !== side) {
+                          dropSideRef.current = side;
+                          setDropSide(side);
+                        }
                       }}
-                      onDragLeave={() => setDropCol((prev) => (prev === col ? null : prev))}
+                      onDragLeave={() => {
+                        if (dropCol === col) {
+                          dropSideRef.current = null;
+                          setDropCol(null);
+                          setDropSide(null);
+                        }
+                      }}
                       onDrop={(e) => {
                         e.preventDefault();
                         const from = dragColRef.current || ((): DetailColId | null => {
@@ -2630,35 +2245,36 @@ export default function App() {
                             return (DETAIL_COLS_DEFAULT as string[]).includes(v) ? (v as DetailColId) : null;
                           } catch { return null; }
                         })();
-                        dragColRef.current = null;
-                        setDropCol(null);
-                        if (from) moveDetailCol(from, col);
+                        const after = dropAfterRef.current;
+                        clearColDrop();
+                        if (from) moveDetailCol(from, col, after);
                       }}
                       onDragEnd={() => {
-                        dragColRef.current = null;
-                        setDropCol(null);
+                        clearColDrop();
                       }}
                     >
-                      <span className="details-th-label">{DETAIL_COL_LABELS[col]}{sort?.col === col ? (sort.dir === 1 ? ' ▲' : ' ▼') : ''}</span>
+                      <span className="details-th-label">{t.detailCols[col]}{sort?.col === col ? (sort.dir === 1 ? ' ▲' : ' ▼') : ''}</span>
                       <span
                         className="details-resizer"
-                        title={`Resize ${DETAIL_COL_LABELS[col]}`}
+                        title={t.list.colResizeTitle(t.detailCols[col])}
                         onMouseDown={(e) => beginColResize(e, col)}
                         onClick={(e) => e.stopPropagation()}
                       />
                     </div>
                   ))}
-                  <div className="details-th details-actions-head" title="Actions" />
+                  <div className="details-th details-actions-head" title={t.list.actionsHead} />
                 </div>
                 <div className="details-body">
                   {filtered.map((it) => {
                     const completed = it.status === 'completed';
                     const active = it.status === 'downloading' || it.status === 'merging';
                     const lastTry = lastTryOf(it);
-                    const statusText = fmtDetailStatus(it);
+                    const statusText = fmtDetailStatus(it, t.status.completed);
                     const statusTitle = it.status === 'error' && it.error
-                      ? `${statusLabel(it.status)} — ${it.error}`
-                      : `${statusLabel(it.status)} — ${itemPct(it).toFixed(2)}%`;
+                      ? t.list.statusTitle(statusLabel(it.status, t.status), it.error, itemPct(it).toFixed(2))
+                      : t.list.statusTitle(statusLabel(it.status, t.status), '', itemPct(it).toFixed(2));
+                    // Session-average fallback keeps ETA stable through brief stalls.
+                    const speedStats = getSpeedStats(it.id);
                     return (
                       <div
                         key={it.id}
@@ -2666,10 +2282,7 @@ export default function App() {
                         style={{ gridTemplateColumns: detailGridTemplate }}
                         onClick={(e) => toggleSelect(e, it.id)}
                         onContextMenu={(e) => openItemCtx(e, it)}
-                        onDoubleClick={async () => {
-                          if (!completed || !hasBackend()) return;
-                          try { await window.jetro!.openFile(it.savePath); } catch (e: any) { alert(e?.message || 'Could not open file'); }
-                        }}
+                        onDoubleClick={() => setAnalyticsId(it.id)}
                         title={`${it.filename}\n${it.savePath}`}
                       >
                         {detailOrder.map((col) => {
@@ -2686,15 +2299,19 @@ export default function App() {
                               <div key={col} className="details-td" onClick={(e) => e.stopPropagation()}>
                                 <select
                                   className="queue-select details-queue-select"
-                                  title={it.queueId ? `In queue: ${queueById(it.queueId)?.name || ''} — click to move` : 'No queue — click to add to a queue'}
+                                  title={it.queueId ? t.list.queueSelectIn(queueById(it.queueId)?.name || '') : t.list.queueSelectNone}
                                   value={it.queueId || ''}
                                   disabled={it.status === 'downloading' || it.status === 'merging'}
-                                  onChange={(e) => moveItemToQueue(it.id, e.target.value || null)}
+                                  onChange={(e) => {
+                                    if (e.target.value === '__new__') openCreateQueueFor(null, it.id);
+                                    else moveItemToQueue(it.id, e.target.value || null);
+                                  }}
                                 >
-                                  <option value="">—</option>
+                                  <option value="">{t.list.noOption}</option>
                                   {queues.map((q) => (
                                     <option key={q.id} value={q.id}>{q.name}</option>
                                   ))}
+                                  <option value="__new__">{t.common.newQueueOption}</option>
                                 </select>
                               </div>
                             );
@@ -2712,52 +2329,76 @@ export default function App() {
                               <div
                                 key={col}
                                 className="details-td details-num"
-                                title={it.totalBytesIsEstimate && !completed ? 'Estimated size — final size is set after merge' : `${it.downloadedBytes ? fmtBytes(it.downloadedBytes) : '0 B'} downloaded${it.totalBytes ? ` of ${fmtSize(it.totalBytes, !!it.totalBytesIsEstimate)}` : ''}`}
+                                title={it.totalBytesIsEstimate && !completed ? t.list.estimatedTitle : t.list.sizeTitle(it.downloadedBytes ? fmtBytes(it.downloadedBytes) : '0 B', it.totalBytes ? fmtSize(it.totalBytes, !!it.totalBytesIsEstimate) : '')}
                               >{fmtDetailSize(it)}</div>
                             );
                           }
                           if (col === 'speed') {
+                            // When paused, freeze the last live speed instead of blanking to '—'.
+                            const isPaused = it.status === 'paused';
+                            let frozenBps = 0;
+                            if (isPaused) {
+                              const arr = speedStats.samples;
+                              for (let i = arr.length - 1; i >= 0; i--) {
+                                if (arr[i].bps > 0) { frozenBps = arr[i].bps; break; }
+                              }
+                            }
+                            const speedText =
+                              active
+                                ? fmtSpeed(it.speedBps || 0)
+                                : isPaused && frozenBps > 0
+                                  ? fmtSpeed(frozenBps)
+                                  : '—';
                             return (
-                              <div key={col} className="details-td details-num" title={active ? `${fmtSpeed(it.speedBps || 0)}` : 'Idle'}>
-                                {active ? fmtSpeed(it.speedBps || 0) : '—'}
+                              <div key={col} className="details-td details-num" title={speedText === '—' ? t.list.idle : t.list.speedTitle(speedText)}>
+                                {speedText}
                               </div>
                             );
                           }
                           if (col === 'eta') {
+                            // Stabilized long-window ETA; instantaneous only as a
+                            // warm-up fallback before the window fills.
+                            // When paused, freeze the last known value.
+                            const isPaused = it.status === 'paused';
+                            const liveEta =
+                              speedStats.etaSec != null
+                                ? formatEtaSec(speedStats.etaSec)
+                                : fmtEta(it, speedStats.avg);
+                            const etaText = completed ? '—' : active || isPaused ? liveEta : '—';
                             return (
-                              <div key={col} className="details-td details-num" title={fmtEta(it) === '—' ? 'ETA unknown (idle or size unknown)' : `ETA ${fmtEta(it)}`}>
-                                {fmtEta(it)}
+                              <div key={col} className="details-td details-num" title={etaText === '—' ? t.list.etaUnknown : t.list.etaTitle(etaText)}>
+                                {etaText}
                               </div>
                             );
                           }
                           return (
-                            <div key={col} className="details-td details-num" title={fmtLastTryTitle(lastTry)}>
-                              {fmtLastTry(lastTry)}
+                            <div key={col} className="details-td details-num" title={fmtLastTryTitle(lastTry, t.months.neverTried, localeName)}>
+                              {fmtLastTry(lastTry, t.months.short, localeName)}
                             </div>
                           );
                         })}
                         <div className="details-td details-actions" onClick={(e) => e.stopPropagation()}>
                           {it.status === 'downloading' || it.status === 'merging' || it.status === 'queued'
-                            ? <button className="icon-btn details-action" title="Pause" onClick={() => window.jetro?.pause(it.id)}><FiPause size={13} /></button>
-                            : !completed && <button className="icon-btn details-action" title="Resume" onClick={() => window.jetro?.resume(it.id)}><FiPlay size={13} /></button>}
+                            ? <button className="icon-btn details-action" title={t.list.pauseTitle} onClick={() => window.jetro?.pause(it.id)}><FiPause size={13} /></button>
+                            : !completed && <button className="icon-btn details-action" title={t.list.resumeTitle} onClick={() => window.jetro?.resume(it.id)}><FiPlay size={13} /></button>}
                           {completed ? (
                             <>
                               <button
                                 className="icon-btn details-action"
-                                title="Open containing folder"
+                                title={t.list.openFolderTitle}
                                 onClick={async () => {
                                   if (!hasBackend()) return;
-                                  try { await window.jetro!.revealInFolder(it.savePath); } catch (e: any) { alert(e?.message || 'Could not open folder'); }
+                                  try { await window.jetro!.revealInFolder(it.savePath); } catch (e: any) { alert(e?.message || t.common.couldNotOpenFolder); }
                                 }}
                               ><FiFolder size={13} /></button>
                               <button
                                 className="icon-btn details-action danger"
-                                title="Delete file and remove from list"
+                                title={t.list.deleteFileTitle}
                                 onClick={() => setPendingRemove({ id: it.id, deleteFile: true })}
                               ><FiTrash2 size={13} /></button>
                             </>
                           ) : (
-                            <button className="icon-btn details-action" title="Remove" onClick={() => setPendingRemove({ id: it.id, deleteFile: false })}><FiX size={13} /></button>
+                            <button className="icon-btn details-action" title={t.list.removeTitle} onClick={() => setPendingRemove({ id: it.id, deleteFile: false })}><FiX size={13} /></button>
                           )}
                         </div>
                       </div>
@@ -2776,6 +2417,7 @@ export default function App() {
                   key={it.id}
                   onClick={(e) => toggleSelect(e, it.id)}
                   onContextMenu={(e) => openItemCtx(e, it)}
+                  onDoubleClick={() => setAnalyticsId(it.id)}
                 >
                   <OsFileIcon item={it} />
                   <div className="card-body">
@@ -2784,53 +2426,57 @@ export default function App() {
                     <div className="progress-track"><div className="progress-fill" style={{ width: pct + '%' }} /></div>
                     <div className="meta">
                       <span><b className="card-pct">{pct.toFixed(1)}%</b></span>
-                      <span title={it.totalBytesIsEstimate && !completed ? 'Estimated size (video+audio) — final size is set after merge' : undefined}>{fmtBytes(it.downloadedBytes)} / {fmtSize(it.totalBytes, !!it.totalBytesIsEstimate && !completed)}</span>
-                      <span style={{ color: statusColor(it.status), fontWeight: 700 }}>{statusLabel(it.status)}</span>
-                      <span className="badge"><FiZap className="inline-icon" /> {it.connections}x {it.supportsRange ? '' : '• single'}</span>
-                      {(it.via === 'ytdlp') && <span className="badge green">{it.audioOnly ? <><FiMusic className="inline-icon" /> audio</> : <><FiFilm className="inline-icon" /> video{it.videoHeight ? ` ${it.videoHeight}p` : ''}</>}</span>}
+                      <span title={it.totalBytesIsEstimate && !completed ? t.list.estimatedTitle : undefined}>{fmtBytes(it.downloadedBytes)} / {fmtSize(it.totalBytes, !!it.totalBytesIsEstimate && !completed)}</span>
+                      <span style={{ color: statusColor(it.status), fontWeight: 700 }}>{statusLabel(it.status, t.status)}</span>
+                      <span className="badge"><FiZap className="inline-icon" /> {it.connections}x {it.supportsRange ? '' : t.list.cardSingle}</span>
+                      {(it.via === 'ytdlp') && <span className="badge green">{it.audioOnly ? <><FiMusic className="inline-icon" /> {t.list.cardAudio}</> : <><FiFilm className="inline-icon" /> {t.list.cardVideo(it.videoHeight ? String(it.videoHeight) : '')}</>}</span>}
                       {qNameOf && <span className="badge green"><FiLayers className="inline-icon" /> {qNameOf}</span>}
                       {it.status === 'error' && <span className="badge red">{it.error}</span>}
                       <select
                         className="queue-select"
-                        title="Add / move to queue"
+                        title={t.list.addMoveQueue}
                         value={it.queueId || ''}
                         disabled={it.status === 'downloading' || it.status === 'merging'}
                         onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => moveItemToQueue(it.id, e.target.value || null)}
+                        onChange={(e) => {
+                          if (e.target.value === '__new__') openCreateQueueFor(null, it.id);
+                          else moveItemToQueue(it.id, e.target.value || null);
+                        }}
                       >
-                        <option value="">No queue</option>
+                        <option value="">{t.common.noQueue}</option>
                         {queues.map((q) => (
                           <option key={q.id} value={q.id}>{q.name}</option>
                         ))}
+                        <option value="__new__">{t.common.newQueueOption}</option>
                       </select>
                     </div>
                   </div>
                   <div className="actions" onClick={(e) => e.stopPropagation()}>
                     {it.status === 'downloading' || it.status === 'merging' || it.status === 'queued'
-                      ? <button className="icon-btn" title="Pause" onClick={() => window.jetro?.pause(it.id)}><FiPause size={15} /></button>
-                      : !completed && <button className="icon-btn" title="Resume" onClick={() => window.jetro?.resume(it.id)}><FiPlay size={15} /></button>}
+                      ? <button className="icon-btn" title={t.list.pauseTitle} onClick={() => window.jetro?.pause(it.id)}><FiPause size={15} /></button>
+                      : !completed && <button className="icon-btn" title={t.list.resumeTitle} onClick={() => window.jetro?.resume(it.id)}><FiPlay size={15} /></button>}
                     {completed ? (
                       <>
                         <button
                           className="icon-btn"
-                          title="Open containing folder"
+                          title={t.list.openFolderTitle}
                           onClick={async () => {
                             if (!hasBackend()) return;
                             try {
                               await window.jetro!.revealInFolder(it.savePath);
                             } catch (e: any) {
-                              alert(e?.message || 'Could not open folder');
+                              alert(e?.message || t.common.couldNotOpenFolder);
                             }
                           }}
                         ><FiFolder size={15} /></button>
                         <button
                           className="icon-btn danger"
-                          title="Delete file and remove from list"
+                          title={t.list.deleteFileTitle}
                           onClick={() => setPendingRemove({ id: it.id, deleteFile: true })}
                         ><FiTrash2 size={15} /></button>
                       </>
                     ) : (
-                      <button className="icon-btn" title="Remove" onClick={() => setPendingRemove({ id: it.id, deleteFile: false })}><FiX size={15} /></button>
+                      <button className="icon-btn" title={t.list.removeTitle} onClick={() => setPendingRemove({ id: it.id, deleteFile: false })}><FiX size={15} /></button>
                     )}
                   </div>
                 </div>
@@ -2853,16 +2499,16 @@ export default function App() {
                     handleStartStopQueue(ctxQueue);
                     setCtx(null);
                   }}
-                ><span className="ctx-icon">{ctxQueue.running ? <FiSquare size={14} /> : <FiPlay size={14} />}</span> {ctxQueue.running ? 'Stop queue' : 'Start queue'}</button>
-                <button className="ctx-item" onClick={() => openEditModal(ctxQueue)}><FiEdit2 size={14} /> Edit Queue / Schedule</button>
+                ><span className="ctx-icon">{ctxQueue.running ? <FiSquare size={14} /> : <FiPlay size={14} />}</span> {ctxQueue.running ? t.queueMenu.stopQueue : t.queueMenu.startQueue}</button>
+                <button className="ctx-item" onClick={() => openEditModal(ctxQueue)}><FiEdit2 size={14} /> {t.queueMenu.editSchedule}</button>
                 <div className="ctx-sep" />
-                <button className="ctx-item danger" onClick={() => handleDeleteQueue(ctxQueue)}><FiTrash2 size={14} /> Delete queue</button>
+                <button className="ctx-item danger" onClick={() => handleDeleteQueue(ctxQueue)}><FiTrash2 size={14} /> {t.queueMenu.deleteQueue}</button>
                 <div className="ctx-sep" />
               </>
             ) : (
-              <div className="ctx-hint">Queue options</div>
+              <div className="ctx-hint">{t.queueMenu.hint}</div>
             )}
-            <button className="ctx-item" onClick={openCreateModal}><FiPlus size={14} /> Create New Queue</button>
+            <button className="ctx-item" onClick={openCreateModal}><FiPlus size={14} /> {t.queueMenu.createNew}</button>
           </div>
         </>
       )}
@@ -2891,93 +2537,94 @@ export default function App() {
               <button
                 className="ctx-item"
                 disabled={!completed}
-                title={completed ? `Open ${it.filename} with the default app` : 'Open is available once the download is complete'}
+                title={completed ? t.itemMenu.openReady(it.filename) : t.itemMenu.openIdle}
                 onClick={() => handleOpenItem('open')}
-              ><FiFileText size={14} /> Open</button>
+              ><FiFileText size={14} /> {t.itemMenu.open}</button>
               <button
                 className="ctx-item"
                 disabled={!completed}
-                title={completed ? 'Choose which app opens this file' : 'Open with is available once the download is complete'}
+                title={completed ? t.itemMenu.openWithReady : t.itemMenu.openWithIdle}
                 onClick={() => handleOpenItem('open-with')}
-              ><FiExternalLink size={14} /> Open with</button>
+              ><FiExternalLink size={14} /> {t.itemMenu.openWith}</button>
               <button
                 className="ctx-item"
-                title="Show the file in its folder"
+                title={t.itemMenu.openFolderTitle}
                 onClick={() => handleOpenItem('folder')}
-              ><FiFolder size={14} /> Open Folder</button>
+              ><FiFolder size={14} /> {t.itemMenu.openFolder}</button>
               <div className="ctx-sep" />
               <button
                 className="ctx-item"
                 disabled={active}
-                title={active ? 'Pause the download before renaming' : `Rename ${it.filename}`}
+                title={active ? t.itemMenu.renameIdle : t.itemMenu.renameReady(it.filename)}
                 onClick={openRenameModal}
-              ><FiEdit2 size={14} /> Rename</button>
+              ><FiEdit2 size={14} /> {t.itemMenu.rename}</button>
               <button
                 className="ctx-item"
                 disabled={active || queued}
-                title={active || queued ? 'Only paused, failed or completed downloads can be restarted' : 'Delete the file and download it again from scratch'}
+                title={active || queued ? t.itemMenu.redownloadIdle : t.itemMenu.redownloadReady}
                 onClick={handleRedownloadItem}
-              ><FiRotateCcw size={14} /> Redownload</button>
+              ><FiRotateCcw size={14} /> {t.itemMenu.redownload}</button>
               {canStop ? (
                 <button className="ctx-item" onClick={handleItemResumeStop}>
-                  <FiPause size={14} /> Stop Download
+                  <FiPause size={14} /> {t.itemMenu.stopDownload}
                 </button>
               ) : canResume ? (
                 <button className="ctx-item" onClick={handleItemResumeStop}>
-                  <FiPlay size={14} /> Resume Download
+                  <FiPlay size={14} /> {t.itemMenu.resumeDownload}
                 </button>
               ) : (
                 <button
                   className="ctx-item"
                   disabled
-                  title={completed ? 'Completed downloads need no resume' : 'Nothing to resume or stop'}
-                ><FiPlay size={14} /> Resume Download</button>
+                  title={completed ? t.itemMenu.resumeCompletedTitle : t.itemMenu.resumeDisabledTitle}
+                ><FiPlay size={14} /> {t.itemMenu.resumeDownload}</button>
               )}
               <button
                 className="ctx-item"
                 disabled={active || isVideo || refreshing}
-                title={isVideo ? 'Refresh is not available for video/audio downloads' : active ? 'Stop the download before refreshing' : 'Re-check the link for a new size'}
+                title={isVideo ? t.itemMenu.refreshVideoTitle : active ? t.itemMenu.refreshActiveTitle : t.itemMenu.refreshIdleTitle}
                 onClick={handleRefreshItem}
-              ><FiRefreshCw size={14} /> {refreshing ? 'Refreshing…' : 'Refresh'}</button>
+              ><FiRefreshCw size={14} /> {refreshing ? t.itemMenu.refreshing : t.itemMenu.refresh}</button>
               <button className="ctx-item danger" onClick={handleRemoveItem}>
-                {completed ? <FiTrash2 size={14} /> : <FiX size={14} />} Remove
+                {completed ? <FiTrash2 size={14} /> : <FiX size={14} />} {t.common.remove}
               </button>
               <div className="ctx-sep" />
               {inQueue ? (
                 <button
                   className="ctx-item"
                   disabled={active}
-                  title={active ? 'Pause the download before moving queues' : `Remove from "${queueName || 'queue'}"`}
+                  title={active ? t.itemMenu.removeFromQueueIdle : t.itemMenu.removeFromQueue(queueName || '')}
                   onClick={() => {
                     const id = it.id;
                     setItemCtx(null);
                     moveItemToQueue(id, null);
                   }}
-                ><FiLayers size={14} /> Remove from queue{queueName ? ` (${queueName})` : ''}</button>
+                ><FiLayers size={14} /> {t.itemMenu.removeFromQueue(queueName || '')}</button>
               ) : (
                 <>
-                  <div className="ctx-hint">Add to queue</div>
+                  <div className="ctx-hint">{t.itemMenu.addToQueue}</div>
                   <div className="ctx-queue-list">
-                    {queues.length === 0 && <div className="ctx-hint">No queues yet</div>}
+                    {queues.length === 0 && <div className="ctx-hint">{t.toolbar.noQueues}</div>}
                     {queues.map((q) => (
                       <button
                         key={q.id}
                         className="ctx-item"
                         disabled={active}
-                        title={active ? 'Pause the download before moving queues' : `Move to "${q.name}"`}
+                        title={active ? t.itemMenu.removeFromQueueIdle : t.itemMenu.moveTo(q.name)}
                         onClick={() => {
                           const id = it.id;
                           const qid = q.id;
                           setItemCtx(null);
                           moveItemToQueue(id, qid);
                         }}
-                      ><FiLayers size={14} /> {q.name}{q.running ? '' : ' (stopped)'}</button>
+                      ><FiLayers size={14} /> {q.name}{q.running ? '' : t.common.stoppedSuffix}</button>
                     ))}
                   </div>
                   <button
                     className="ctx-item"
                     onClick={() => {
                       setPendingQueueMove(it.id);
+                      setQueueCreateReturn(null);
                       setItemCtx(null);
                       setQName('');
                       setQNameError('');
@@ -2988,17 +2635,25 @@ export default function App() {
                       setQPower('nothing');
                       setShowQueueModal({ mode: 'create' });
                     }}
-                  ><FiPlus size={14} /> New queue…</button>
+                  ><FiPlus size={14} /> {t.itemMenu.newQueue}</button>
                 </>
               )}
               <div className="ctx-sep" />
+              <button
+                className="ctx-item"
+                title={t.itemMenu.detailsSpeedTitle}
+                onClick={() => {
+                  setAnalyticsId(it.id);
+                  setItemCtx(null);
+                }}
+              ><FiActivity size={14} /> {t.itemMenu.detailsSpeed}</button>
               <button
                 className="ctx-item"
                 onClick={() => {
                   setPropsId(it.id);
                   setItemCtx(null);
                 }}
-              ><FiInfo size={14} /> Properties</button>
+              ><FiInfo size={14} /> {t.itemMenu.properties}</button>
             </div>
           </>
         );
@@ -3007,32 +2662,51 @@ export default function App() {
       {showAdd && (
         <div className="modal-overlay" onClick={() => setShowAdd(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiPlus className="inline-icon" /> New download</h2>
-            <p>Paste a link — rename the file below if you like, then choose where to save it.<br />You can also download from YouTube, TikTok, Instagram, Reddit and{' '}
+            <h2 className="modal-title"><FiPlus className="inline-icon" /> {t.newDownload.title}</h2>
+            <p>{t.newDownload.introA}<br />{t.newDownload.introB}{' '}
               <button
                 type="button"
                 className="link-btn"
                 style={{ fontSize: 'inherit' }}
-                title="See all supported websites (yt-dlp)"
+                title={t.newDownload.introMoreTitle}
                 onClick={() => openExternalUrl(SUPPORTED_SITES_URL)}
-              >1000+ more websites</button>{' '}
-              by pasting their links.</p>
+              >{t.newDownload.introMore}</button>{' '}
+              {t.newDownload.introC}</p>
             <input
               className="input"
               autoFocus
-              placeholder="example.com/file.zip"
+              dir="ltr"
+              placeholder={t.newDownload.urlPlaceholder}
               value={newUrl}
               onChange={(e) => { setNewUrl(e.target.value); if (urlError) setUrlError(''); }}
+              onPaste={(e) => {
+                // Pasted prose/whitespace ("check this: example.com/a.zip\n") is
+                // cleaned to just the link so it lands ready in Link Address.
+                try {
+                  const raw = String(e.clipboardData?.getData('text') || '');
+                  if (!raw || !/[\s"'<>]/.test(raw)) return; // single token: native is fine
+                  const url = extractPastedUrl(raw);
+                  if (url) {
+                    e.preventDefault();
+                    setNewUrl(url);
+                    setUrlError('');
+                    filenameTouchedRef.current = false;
+                  }
+                } catch {
+                  // fall back to native paste
+                }
+              }}
               onKeyDown={(e) => { if (e.key === 'Enter') addDl(); }}
               style={urlError ? { borderColor: 'var(--red)' } : undefined}
             />
             {urlError && <div className="form-error">{urlError}</div>}
             {newUrl.trim() !== '' && (!isVideoPageUrl(newUrl) || !!selectedVideoKind || selectedVideoHeight > 0 || !!selectedVideoUrl) && (
               <>
-                <label className="form-label">File name</label>
+                <label className="form-label">{t.newDownload.fileName}</label>
                 <input
                   className="input"
-                  placeholder={probedFilename || 'e.g. Mr Robot.mp4'}
+                  dir="auto"
+                  placeholder={probedFilename || t.newDownload.fileNamePlaceholder}
                   value={newFilename}
                   onChange={(e) => {
                     setNewFilename(e.target.value);
@@ -3044,40 +2718,42 @@ export default function App() {
                 />
                 {filenameError && <div className="form-error">{filenameError}</div>}
                 {!filenameError && probedFilename !== '' && probedFilename !== newFilename.trim() && (
-                  <div className="form-hint">Detected: {probedFilename}</div>
+                  <div className="form-hint">{t.newDownload.detected(probedFilename)}</div>
                 )}
               </>
             )}
             {newUrl.trim() !== '' && isVideoPageUrl(newUrl) && (
               <div className="video-box">
-                <div className="video-box-desc">Video/audio page detected — all qualities, best available (merged to mp4 / extracted audio via bundled ffmpeg).</div>
+                <div className="video-box-desc">{t.newDownload.videoDesc}</div>
                 <button className="btn btn-small" disabled={videoLoading} onClick={detectVideo}>
-                  <FiFilm className="btn-icon" /> {videoLoading ? 'Detecting…' : videoFormats.length ? 'Detect again' : 'Detect qualities'}
+                  <FiFilm className="btn-icon" /> {videoLoading ? t.newDownload.detecting : videoFormats.length ? t.newDownload.detectAgain : t.newDownload.detectQualities}
                 </button>
                 {needsCookies && (
                   <div className="cookie-box">
-                    <div className="cookie-box-title">Login needed — log in on the website, export its cookies, then paste them or pick the file and retry.</div>
-                    <label className="form-label-sm">Paste cookies.txt content</label>
+                    <div className="cookie-box-title">{t.newDownload.cookieTitle}</div>
+                    <label className="form-label-sm">{t.newDownload.cookiePasteLabel}</label>
                     <textarea
                       className="input"
+                      dir="ltr"
                       rows={4}
-                      placeholder={'# Netscape HTTP Cookie File… (paste the whole export)'}
+                      placeholder={t.newDownload.cookiePastePlaceholder}
                       value={cookiesText}
                       onChange={(e) => { setCookiesText(e.target.value); if (cookieError) setCookieError(''); if (urlError) setUrlError(''); }}
                     />
-                    <div className="cookie-or">— or —</div>
-                    <label className="form-label-sm">Cookie file from your directory (any text file)</label>
+                    <div className="cookie-or">{t.newDownload.cookieOr}</div>
+                    <label className="form-label-sm">{t.newDownload.cookieFileLabel}</label>
                     <div className="row" style={{ alignItems: 'flex-end' }}>
                       <input
                         className="input"
+                        dir="ltr"
                         style={{ flex: 1, minWidth: 0, marginBottom: 0 }}
-                        placeholder="cookie file path…"
+                        placeholder={t.newDownload.cookieFilePlaceholder}
                         value={cookiesFile}
                         onChange={(e) => { setCookiesFile(e.target.value); if (cookieError) setCookieError(''); if (urlError) setUrlError(''); }}
                       />
                       <button
                         className="btn btn-small"
-                        title="Choose cookies.txt file"
+                        title={t.newDownload.cookiePickTitle}
                         onClick={async () => {
                           if (!hasBackend()) return;
                           const f = await window.jetro!.pickFile();
@@ -3093,7 +2769,7 @@ export default function App() {
                     <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
                       <button
                         className="btn btn-small"
-                        title="Open the Get cookies.txt Locally plugin in the Chrome Web Store"
+                        title={t.newDownload.cookieExtensionTitle}
                         onClick={async () => {
                           try {
                             if (window.jetro?.openExternal) await window.jetro.openExternal(COOKIE_EXPORTER_URL);
@@ -3102,25 +2778,50 @@ export default function App() {
                             try { window.open(COOKIE_EXPORTER_URL, '_blank', 'noopener'); } catch {}
                           }
                         }}
-                      ><MdExtension className="btn-icon" /> Install cookie exporter extension</button>
+                      ><MdExtension className="btn-icon" /> {t.newDownload.cookieExtension}</button>
                       <button className="btn btn-small btn-primary" disabled={videoLoading} onClick={detectVideo}>
-                        <FiFilm className="btn-icon" /> {videoLoading ? 'Retrying…' : 'Retry with cookies'}
+                        <FiFilm className="btn-icon" /> {videoLoading ? t.newDownload.retrying : t.newDownload.retryCookies}
                       </button>
                     </div>
                   </div>
                 )}
                 {videoHint && !cookieError && <div className="video-hint">{videoTitle ? `${videoTitle} — ` : ''}{videoHint}</div>}
+                {videoProxyHint && !videoLoading && videoFormats.length === 0 && (
+                  <div className="proxy-hint-box" role="alert">
+                    <div className="proxy-hint-text">
+                      <FiGlobe className="inline-icon" /> {t.newDownload.detectProxyHint}
+                    </div>
+                    <div className="proxy-hint-current">
+                      {t.settings.proxyMode}:{' '}
+                      <b>
+                        {settings?.proxyMode === 'custom'
+                          ? t.settings.proxyCustom
+                          : settings?.proxyMode === 'system'
+                            ? t.settings.proxySystem
+                            : t.settings.proxyNone}
+                      </b>
+                    </div>
+                    <div className="row proxy-hint-actions">
+                      <button type="button" className="btn btn-small btn-primary" onClick={openProxySettings}>
+                        <FiSettings className="btn-icon" /> {t.newDownload.openProxySettings}
+                      </button>
+                      <button type="button" className="btn btn-small" disabled={videoLoading} onClick={detectVideo}>
+                        <FiRefreshCw className="btn-icon" /> {t.newDownload.detectAgain}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {videoDetail && (
                   <div className="video-detail-wrap">
                     <button className="link-btn" onClick={() => setShowVideoDetail((v) => !v)}>
-                      {showVideoDetail ? 'Hide details' : 'Show details'}
+                      {showVideoDetail ? t.newDownload.hideDetails : t.newDownload.showDetails}
                     </button>
                     {showVideoDetail && <pre className="video-detail-log">{videoDetail}</pre>}
                   </div>
                 )}
                 {videoFormats.filter((f) => (f.kind || 'video') !== 'audio').length > 0 && (
                   <>
-                    <div className="video-group-label">VIDEO — pick a height (no cap)</div>
+                    <div className="video-group-label">{t.newDownload.videoGroup}</div>
                     <div className="row" style={{ flexWrap: 'wrap' }}>
                       {videoFormats.filter((f) => (f.kind || 'video') !== 'audio').map((f) => {
                         const fKind = (f.kind || 'video') as 'video' | 'audio';
@@ -3138,7 +2839,7 @@ export default function App() {
                               setSelectedVideoEstimatedBytes(Math.max(0, Math.round(Number((f as any)?.estimatedBytes || 0))));
                               if (!filenameTouchedRef.current && videoTitle) setNewFilename(sanitizeVideoFilename(videoTitle, f.ext));
                             }}
-                          >{f.height ? `${f.height}p` : f.quality} · {f.ext}{f.needsMerge ? ' · merge' : ''}{Number((f as any)?.estimatedBytes || 0) > 0 ? ` · ${fmtSize(Number((f as any).estimatedBytes), true)}` : ''}</button>
+                          >{f.height ? `${f.height}p` : f.quality} · {f.ext}{f.needsMerge ? t.newDownload.mergeSuffix : ''}{Number((f as any)?.estimatedBytes || 0) > 0 ? ` · ${fmtSize(Number((f as any).estimatedBytes), true)}` : ''}</button>
                         );
                       })}
                     </div>
@@ -3146,7 +2847,7 @@ export default function App() {
                 )}
                 {videoFormats.filter((f) => f.kind === 'audio').length > 0 && (
                   <>
-                    <div className="video-group-label">AUDIO — best available per format</div>
+                    <div className="video-group-label">{t.newDownload.audioGroup}</div>
                     <div className="row" style={{ flexWrap: 'wrap' }}>
                       {videoFormats.filter((f) => f.kind === 'audio').map((f) => {
                         const active = selectedVideoKind === 'audio' && selectedVideoExt === String(f.ext || '').toLowerCase();
@@ -3176,28 +2877,29 @@ export default function App() {
                 {!!selectedVideoKind && (
                   <div className="video-selected">
                     {selectedVideoKind === 'audio'
-                      ? `Selected audio${selectedVideoEstimatedBytes > 0 ? ` (${fmtSize(selectedVideoEstimatedBytes, true)} estimated)` : ''} — Download will fetch best audio + convert if needed.`
+                      ? t.newDownload.selectedAudio(selectedVideoEstimatedBytes > 0 ? fmtSize(selectedVideoEstimatedBytes, true) : '')
                       : selectedVideoNeedsMerge || !selectedVideoUrl
-                        ? `Selected ${selectedVideoHeight ? `${selectedVideoHeight}p` : 'best video'}${selectedVideoEstimatedBytes > 0 ? ` (${fmtSize(selectedVideoEstimatedBytes, true)} estimated)` : ''} — Download will fetch + merge to mp4.`
-                        : 'Selected — Download will fetch the video file directly.'}
+                        ? t.newDownload.selectedMerge(selectedVideoHeight ? String(selectedVideoHeight) : '', selectedVideoEstimatedBytes > 0 ? fmtSize(selectedVideoEstimatedBytes, true) : '')
+                        : t.newDownload.selectedDirect}
                   </div>
                 )}
                 {(videoFormats.length > 0 || playlist) && (
-                  <div className="row" style={{ marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                    <label style={{ fontSize: 12 }}><input type="checkbox" checked={videoSubtitles} onChange={(e) => setVideoSubtitles(e.target.checked)} /> Subtitles (EN)</label>
-                    <select className="input" style={{ flex: 1, minWidth: 140, marginBottom: 0 }} value={videoQueueId} onChange={(e) => setVideoQueueId(e.target.value)} title="Add video to queue">
-                      <option value="">No queue</option>
-                      {queues.map((q) => <option key={q.id} value={q.id}>{q.name}{q.running ? ' (running)' : ''}</option>)}
+                  <div className="row select-row" style={{ marginTop: 8 }}>
+                    <label style={{ fontSize: 12 }}><input type="checkbox" checked={videoSubtitles} onChange={(e) => setVideoSubtitles(e.target.checked)} /> {t.newDownload.subtitles}</label>
+                    <select className="input select-queue" value={videoQueueId} onChange={(e) => { if (e.target.value === '__new__') openCreateQueueFor('video'); else setVideoQueueId(e.target.value); }} title={t.newDownload.videoQueueTitle}>
+                      <option value="">{t.common.noQueue}</option>
+                      {queues.map((q) => <option key={q.id} value={q.id}>{q.name}{q.running ? t.common.runningSuffix : ''}</option>)}
+                      <option value="__new__">{t.common.newQueueOption}</option>
                     </select>
                   </div>
                 )}
                 {playlist && playlist.entries.length > 1 && (
                   <div style={{ marginTop: 10 }}>
-                    <div className="video-group-label">PLAYLIST — {playlist.count} videos{playlist.count > 50 ? ' (first 50 shown)' : ''}{playlist.title ? ` • ${playlist.title}` : ''}</div>
+                    <div className="video-group-label">{t.newDownload.playlistGroup(playlist.count, playlist.count > 50 ? t.newDownload.playlistFirst50 : '', playlist.title)}</div>
                     <div className="row" style={{ marginBottom: 6 }}>
-                      <button className="btn btn-small" onClick={() => setPlaylistSelected(new Set(playlist.entries.map((en) => String(en.url))))}>Select all</button>
-                      <button className="btn btn-small" onClick={() => setPlaylistSelected(new Set())}>Clear</button>
-                      <span className="queue-meta">{playlistSelected.size} selected — each becomes its own download</span>
+                      <button className="btn btn-small" onClick={() => setPlaylistSelected(new Set(playlist.entries.map((en) => String(en.url))))}>{t.newDownload.selectAll}</button>
+                      <button className="btn btn-small" onClick={() => setPlaylistSelected(new Set())}>{t.newDownload.clear}</button>
+                      <span className="queue-meta">{t.newDownload.playlistSelected(playlistSelected.size)}</span>
                     </div>
                     <div className="ctx-queue-list" style={{ maxHeight: 180 }}>
                       {playlist.entries.map((en) => {
@@ -3221,36 +2923,37 @@ export default function App() {
                       })}
                     </div>
                     <button className="btn btn-primary btn-small" style={{ marginTop: 8 }} disabled={playlistAdding || playlistSelected.size === 0 || !selectedVideoKind} onClick={startPlaylistDownload}>
-                      {playlistAdding ? 'Adding…' : `Download ${playlistSelected.size} video${playlistSelected.size === 1 ? '' : 's'}`}
+                      {playlistAdding ? t.newDownload.playlistAdding : t.newDownload.playlistDownload(playlistSelected.size)}
                     </button>
                   </div>
                 )}
               </div>
             )}
-            <label className="form-label">Save to folder</label>
+            <label className="form-label">{t.newDownload.saveFolder}</label>
             <div className="save-path-box">
-              <input className="input" placeholder="Choose a folder…" value={savePath} onChange={(e) => setSavePath(e.target.value)} />
-              <button className="btn" title="Choose folder" onClick={() => chooseSaveFolder()}>…</button>
+              <input className="input" dir="ltr" placeholder={t.common.chooseFolder} value={savePath} onChange={(e) => setSavePath(e.target.value)} />
+              <button className="btn" title={t.common.chooseFolderTitle} onClick={() => chooseSaveFolder()}><FiFolder size={16} /></button>
             </div>
             {isVideoPageUrl(newUrl) ? (
-              <div className="queue-note">Video/audio downloads run via yt-dlp, which manages its own connections — queues don&apos;t apply.</div>
+              <div className="queue-note">{t.newDownload.videoQueueNote}</div>
             ) : (
-              <div className="row">
-                <select className="input" style={{ flex: 1, minWidth: 0, marginBottom: 0 }} value={newConns} onChange={(e) => setNewConns(Number(e.target.value))}>
-                  {CONNECTION_OPTIONS.map((n) => <option key={n} value={n}>{n} connections</option>)}
+              <div className="row select-row">
+                <select className="input select-conns" value={newConns} onChange={(e) => setNewConns(Number(e.target.value))}>
+                  {CONNECTION_OPTIONS.map((n) => <option key={n} value={n}>{t.common.connections(n)}</option>)}
                 </select>
-                <select className="input" style={{ flex: 1, minWidth: 0, marginBottom: 0 }} value={newQueueId} onChange={(e) => setNewQueueId(e.target.value)} title="Add to queue">
-                  <option value="">No queue</option>
+                <select className="input select-queue" value={newQueueId} onChange={(e) => { if (e.target.value === '__new__') openCreateQueueFor('newDownload'); else setNewQueueId(e.target.value); }} title={t.newDownload.videoQueueTitle}>
+                  <option value="">{t.common.noQueue}</option>
                   {queues.map((q) => (
-                    <option key={q.id} value={q.id}>{q.name}{q.running ? ' (running)' : ''}</option>
+                    <option key={q.id} value={q.id}>{q.name}{q.running ? t.common.runningSuffix : ''}</option>
                   ))}
+                  <option value="__new__">{t.common.newQueueOption}</option>
                 </select>
               </div>
             )}
-            <button className="btn" style={{ width: '100%', marginTop: 10 }} onClick={async () => { try { const t = await navigator.clipboard.readText(); if (t) { setNewUrl(t.trim()); setUrlError(''); filenameTouchedRef.current = false; } } catch {} }}><FiClipboard className="btn-icon" /> Paste from clipboard</button>
+            <button className="btn" style={{ width: '100%', marginTop: 10 }} onClick={async () => { try { const txt = await navigator.clipboard.readText(); if (txt) { setNewUrl(txt.trim()); setUrlError(''); filenameTouchedRef.current = false; } } catch {} }}><FiClipboard className="btn-icon" /> {t.common.pasteFromClipboard}</button>
             <div className="row modal-actions">
-              <button className="btn" onClick={() => setShowAdd(false)}>Cancel</button>
-              <button className="btn btn-primary" disabled={adding} onClick={() => addDl()}>{adding ? 'Starting…' : 'Download'}</button>
+              <button className="btn" onClick={() => setShowAdd(false)}>{t.common.cancel}</button>
+              <button className="btn btn-primary" disabled={adding} onClick={() => addDl()}>{adding ? t.newDownload.starting : t.common.download}</button>
             </div>
           </div>
         </div>
@@ -3259,24 +2962,25 @@ export default function App() {
       {showBatch && batchStep === 1 && (
         <div className="modal-overlay" onClick={closeBatch}>
           <div className="modal" style={{ width: 600 }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiLayers className="inline-icon" /> New Batch Download</h2>
+            <h2 className="modal-title"><FiLayers className="inline-icon" /> {t.batch.title}</h2>
             <p>
-              Batch download adds multiple file parts to your downloads at once, instead of pasting links one by one.{' '}
-              Put an asterisk (<b>*</b>) where the part number or letter goes, then tweak the range below.{' '}
-              Example: <code style={{ wordBreak: 'break-all' }}>example.com/files/part_*.zip</code> with 0–10 adds part_0 … part_10.
+              {t.batch.introA}{' '}
+              {t.batch.introB}<b>*</b>{t.batch.introC}{' '}
+              {t.batch.introExample} <code style={{ wordBreak: 'break-all' }}>{t.batch.introExampleUrl}</code> {t.batch.introExampleRest}
             </p>
-            <label className="form-label">Address link (must contain *)</label>
+            <label className="form-label">{t.batch.urlLabel}</label>
             <input
               className="input"
               autoFocus
-              placeholder="example.com/files/part_*.zip"
+              dir="ltr"
+              placeholder={t.batch.urlPlaceholder}
               value={batchUrl}
               onChange={(e) => { setBatchUrl(e.target.value); if (batchError) setBatchError(''); }}
               onKeyDown={(e) => { if (e.key === 'Enter') handleBatchOk(); }}
               style={batchError && !batchUrl.includes('*') ? { borderColor: 'var(--red)' } : undefined}
             />
-            <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>Replace * with</label>
-            <div className="theme-segment" role="radiogroup" aria-label="Replace asterisk with">
+            <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>{t.batch.replaceWith}</label>
+            <div className="theme-segment" role="radiogroup" aria-label={t.batch.replaceWith}>
               {(['numbers', 'letters'] as const).map((m) => (
                 <button
                   key={m}
@@ -3285,13 +2989,13 @@ export default function App() {
                   aria-checked={batchMode === m}
                   className={batchMode === m ? 'active' : ''}
                   onClick={() => { setBatchMode(m); setBatchError(''); }}
-                >{m === 'numbers' ? 'Numbers' : 'Letters'}</button>
+                >{m === 'numbers' ? t.batch.numbers : t.batch.letters}</button>
               ))}
             </div>
             {batchMode === 'numbers' ? (
               <div className="row">
                 <div style={{ flex: 1 }}>
-                  <label className="form-label">From</label>
+                  <label className="form-label">{t.batch.from}</label>
                   <input
                     className="input"
                     type="number"
@@ -3303,7 +3007,7 @@ export default function App() {
                   />
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label className="form-label">To</label>
+                  <label className="form-label">{t.batch.to}</label>
                   <input
                     className="input"
                     type="number"
@@ -3315,7 +3019,7 @@ export default function App() {
                   />
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label className="form-label">Wildcard size (1–10)</label>
+                  <label className="form-label">{t.batch.wildcard}</label>
                   <input
                     className="input"
                     type="number"
@@ -3340,7 +3044,7 @@ export default function App() {
             ) : (
               <div className="row">
                 <div style={{ flex: 1 }}>
-                  <label className="form-label">From (a–z)</label>
+                  <label className="form-label">{t.batch.fromLetters}</label>
                   <div className="batch-stepper">
                     <input
                       className="input"
@@ -3354,13 +3058,13 @@ export default function App() {
                       style={{ marginBottom: 0, textAlign: 'center' }}
                     />
                     <div className="batch-stepper-btns">
-                      <button className="btn btn-small" title="Next letter" onClick={() => setBatchFromLetter((v) => stepLetter(v || 'a', 1))}>▲</button>
-                      <button className="btn btn-small" title="Previous letter" onClick={() => setBatchFromLetter((v) => stepLetter(v || 'a', -1))}>▼</button>
+                      <button className="btn btn-small" title={t.batch.nextLetter} onClick={() => setBatchFromLetter((v) => stepLetter(v || 'a', 1))}>▲</button>
+                      <button className="btn btn-small" title={t.batch.prevLetter} onClick={() => setBatchFromLetter((v) => stepLetter(v || 'a', -1))}>▼</button>
                     </div>
                   </div>
                 </div>
                 <div style={{ flex: 1 }}>
-                  <label className="form-label">To (a–z)</label>
+                  <label className="form-label">{t.batch.toLetters}</label>
                   <div className="batch-stepper">
                     <input
                       className="input"
@@ -3374,63 +3078,63 @@ export default function App() {
                       style={{ marginBottom: 0, textAlign: 'center' }}
                     />
                     <div className="batch-stepper-btns">
-                      <button className="btn btn-small" title="Next letter" onClick={() => setBatchToLetter((v) => stepLetter(v || 'z', 1))}>▲</button>
-                      <button className="btn btn-small" title="Previous letter" onClick={() => setBatchToLetter((v) => stepLetter(v || 'z', -1))}>▼</button>
+                      <button className="btn btn-small" title={t.batch.nextLetter} onClick={() => setBatchToLetter((v) => stepLetter(v || 'z', 1))}>▲</button>
+                      <button className="btn btn-small" title={t.batch.prevLetter} onClick={() => setBatchToLetter((v) => stepLetter(v || 'z', -1))}>▼</button>
                     </div>
                   </div>
                 </div>
               </div>
             )}
             <div className="batch-preview">
-              <label className="form-label">First file</label>
+              <label className="form-label">{t.batch.firstFile}</label>
               <input className="input batch-preview-input" readOnly tabIndex={-1} value={batchFirst} placeholder="—" title={batchFirst} />
-              <label className="form-label">Second file</label>
+              <label className="form-label">{t.batch.secondFile}</label>
               <input className="input batch-preview-input" readOnly tabIndex={-1} value={batchSecond} placeholder="—" title={batchSecond} />
               <div className="batch-ellipsis">…</div>
-              <label className="form-label">Last file</label>
+              <label className="form-label">{t.batch.lastFile}</label>
               <input className="input batch-preview-input" readOnly tabIndex={-1} value={batchLast} placeholder="—" title={batchLast} />
               {batchPreviewUrls.length > 0 && (
-                <div className="form-hint" style={{ margin: '4px 0 0' }}>{batchPreviewUrls.length} file{batchPreviewUrls.length === 1 ? '' : 's'} will be added, lowest first.</div>
+                <div className="form-hint" style={{ margin: '4px 0 0' }}>{t.batch.willAdd(batchPreviewUrls.length)}</div>
               )}
             </div>
             {batchValidation.error && batchUrl.trim() !== '' && (
               <div className="form-error" style={{ marginTop: 8 }}>{batchValidation.error}</div>
             )}
             {batchError && <div className="form-error" style={{ marginTop: 8 }}>{batchError}</div>}
-            <label className="form-label">Save to folder</label>
+            <label className="form-label">{t.batch.saveFolder}</label>
             <div className="save-path-box">
-              <input className="input" placeholder="Choose a folder…" value={batchSavePath} onChange={(e) => setBatchSavePath(e.target.value)} />
+              <input className="input" dir="ltr" placeholder={t.common.chooseFolder} value={batchSavePath} onChange={(e) => setBatchSavePath(e.target.value)} />
               <button
                 className="btn"
-                title="Choose folder"
+                title={t.common.chooseFolderTitle}
                 onClick={async () => {
                   if (!hasBackend()) return;
                   const f = await window.jetro!.pickFolder(batchSavePath || settings.downloadDir);
                   if (f) setBatchSavePath(f);
                 }}
-              >…</button>
+              ><FiFolder size={16} /></button>
             </div>
-            <label className="form-label">Connections per file</label>
-            <select className="input" style={{ marginBottom: 0 }} value={batchConns} onChange={(e) => setBatchConns(Number(e.target.value))}>
-              {CONNECTION_OPTIONS.map((n) => <option key={n} value={n}>{n} connections</option>)}
+            <label className="form-label">{t.batch.connsPerFile}</label>
+            <select className="input select-single" value={batchConns} onChange={(e) => setBatchConns(Number(e.target.value))}>
+              {CONNECTION_OPTIONS.map((n) => <option key={n} value={n}>{t.common.connections(n)}</option>)}
             </select>
             <button
               className="btn"
               style={{ width: '100%', marginTop: 10 }}
               onClick={async () => {
                 try {
-                  const t = await navigator.clipboard.readText();
-                  if (t) { setBatchUrl(t.trim()); setBatchError(''); }
+                  const txt = await navigator.clipboard.readText();
+                  if (txt) { setBatchUrl(txt.trim()); setBatchError(''); }
                 } catch {}
               }}
-            ><FiClipboard className="btn-icon" /> Paste from clipboard</button>
+            ><FiClipboard className="btn-icon" /> {t.common.pasteFromClipboard}</button>
             <div className="row modal-actions">
-              <button className="btn" disabled={batchResolving} onClick={closeBatch}>Cancel</button>
+              <button className="btn" disabled={batchResolving} onClick={closeBatch}>{t.common.cancel}</button>
               <button
                 className="btn btn-primary"
                 disabled={batchResolving || !batchPreviewUrls.length}
                 onClick={handleBatchOk}
-              >OK</button>
+              >{t.common.ok}</button>
             </div>
           </div>
         </div>
@@ -3439,21 +3143,21 @@ export default function App() {
       {showBatch && batchStep === 2 && (
         <div className="modal-overlay" onClick={closeBatch}>
           <div className="modal" style={{ width: 640 }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiLayers className="inline-icon" /> Batch links ({batchUrls.length})</h2>
+            <h2 className="modal-title"><FiLayers className="inline-icon" /> {t.batch.linksTitle(batchUrls.length)}</h2>
             <p>
-              These links are resolved without downloading, so you can check you will get the right files.{' '}
-              Files are added lowest first into a new queue, so they stay together instead of mixing with other downloads.{' '}
-              Simultaneous files: <b>{Number(settings.maxConcurrentDownloads) || 3}</b> (change Concurrent downloads in Settings).
+              {t.batch.linksIntroA}{' '}
+              {t.batch.linksIntroB}{' '}
+              {t.batch.simultaneous} <b>{Number(settings.maxConcurrentDownloads) || 3}</b> {t.batch.simultaneousHint}
             </p>
-            {batchResolving && <div className="video-hint">Resolving {batchUrls.length} links…</div>}
+            {batchResolving && <div className="video-hint">{t.batch.resolving(batchUrls.length)}</div>}
             {!batchResolving && batchRows.length > 0 && (
               <div className="video-hint">
-                {batchOkCount} ok{batchFailCount ? ` • ${batchFailCount} failed` : ''} — failed links won&apos;t be added.
+                {t.batch.resolveSummary(batchOkCount, batchFailCount)}
               </div>
             )}
             <div className="batch-list">
               {batchResolving && batchRows.length === 0 && (
-                <div className="dropdown-empty">Resolving…</div>
+                <div className="dropdown-empty">{t.batch.resolvingShort}</div>
               )}
               {batchRows.map((r, i) => (
                 <div key={r.url + i} className="batch-row">
@@ -3465,12 +3169,12 @@ export default function App() {
                         <>
                           <span className="badge green">OK</span>
                           <span className="batch-filename" title={r.filename}>{r.filename}</span>
-                          <span>{r.totalBytes ? fmtBytes(r.totalBytes) : 'size unknown'}</span>
+                          <span>{r.totalBytes ? fmtBytes(r.totalBytes) : t.batch.sizeUnknown}</span>
                         </>
                       ) : (
                         <>
-                          <span className="badge red">Failed</span>
-                          <span className="batch-filename" title={r.error || 'Invalid link'}>{r.error || 'Invalid link'}</span>
+                          <span className="badge red">{t.batch.failed}</span>
+                          <span className="batch-filename" title={r.error || t.batch.invalidLink}>{r.error || t.batch.invalidLink}</span>
                         </>
                       )}
                     </div>
@@ -3480,13 +3184,13 @@ export default function App() {
             </div>
             {batchError && <div className="form-error" style={{ marginTop: 8 }}>{batchError}</div>}
             <div className="row modal-actions" style={{ flexWrap: 'wrap' }}>
-              <button className="btn" disabled={batchAdding || batchResolving} onClick={closeBatch}>Cancel</button>
-              <button className="btn" disabled={batchAdding || batchResolving} onClick={() => { if (!batchResolving && !batchAdding) setBatchStep(1); }}>← Back</button>
+              <button className="btn" disabled={batchAdding || batchResolving} onClick={closeBatch}>{t.common.cancel}</button>
+              <button className="btn" disabled={batchAdding || batchResolving} onClick={() => { if (!batchResolving && !batchAdding) setBatchStep(1); }}>{t.common.back}</button>
               <button
                 className="btn btn-primary"
                 disabled={batchAdding || batchResolving || batchOkCount === 0}
                 onClick={handleBatchDownload}
-              >{batchAdding ? 'Adding…' : `Download${batchOkCount ? ` (${batchOkCount})` : ''}`}</button>
+              >{batchAdding ? t.batch.adding : t.batch.downloadCount(batchOkCount)}</button>
             </div>
           </div>
         </div>
@@ -3495,18 +3199,17 @@ export default function App() {
       {pendingFormatConfirm && (
         <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => setPendingFormatConfirm(null)}>
           <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiFileText className="inline-icon" /> Change file format?</h2>
+            <h2 className="modal-title"><FiFileText className="inline-icon" /> {t.formatConfirm.title}</h2>
             <p>
-              The link points to {pendingFormatConfirm.detExt ? <>a <b>.{pendingFormatConfirm.detExt}</b> file</> : 'a file with no extension'}{' '}
-              (<b style={{ wordBreak: 'break-all' }}>{pendingFormatConfirm.detectedName}</b>), but you named it{' '}
+              {t.formatConfirm.pointsTo} {pendingFormatConfirm.detExt ? <>{t.formatConfirm.aFile(pendingFormatConfirm.detExt)}</> : t.formatConfirm.noExt}{' '}
+              (<b style={{ wordBreak: 'break-all' }}>{pendingFormatConfirm.detectedName}</b>), {t.formatConfirm.butNamed}{' '}
               <b style={{ wordBreak: 'break-all' }}>{pendingFormatConfirm.finalName}</b>
-              {pendingFormatConfirm.finalExt ? '' : ' (no extension)'}. The downloaded content
-              stays the same — only the name changes, and your system may no longer recognize how to open it.
+              {pendingFormatConfirm.finalExt ? '' : ` ${t.formatConfirm.noExtSuffix}`}. {t.formatConfirm.body}
             </p>
             <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" autoFocus disabled={adding} onClick={confirmFormatAnyway}>{adding ? 'Starting…' : 'Download anyway'}</button>
-              <button className="btn" disabled={adding} onClick={useOriginalFilename}>Use original name</button>
-              <button className="btn" disabled={adding} onClick={() => setPendingFormatConfirm(null)}>Cancel</button>
+              <button className="btn btn-primary" autoFocus disabled={adding} onClick={confirmFormatAnyway}>{adding ? t.newDownload.starting : t.formatConfirm.anyway}</button>
+              <button className="btn" disabled={adding} onClick={useOriginalFilename}>{t.formatConfirm.useOriginal}</button>
+              <button className="btn" disabled={adding} onClick={() => setPendingFormatConfirm(null)}>{t.common.cancel}</button>
             </div>
           </div>
         </div>
@@ -3515,30 +3218,31 @@ export default function App() {
       {pendingCollision && (
         <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => setPendingCollision(null)}>
           <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiFileText className="inline-icon" /> File already exists</h2>
+            <h2 className="modal-title"><FiFileText className="inline-icon" /> {t.collision.title}</h2>
             <p>
-              <b style={{ wordBreak: 'break-all' }}>{pendingCollision.filename}</b> is already in{' '}
-              <b style={{ wordBreak: 'break-all' }}>{pendingCollision.dir || settings.downloadDir}</b>.
-              What do you want to do?
+              <b style={{ wordBreak: 'break-all' }}>{pendingCollision.filename}</b> {t.collision.bodyA}{' '}
+              <b style={{ wordBreak: 'break-all' }} dir="ltr">{pendingCollision.dir || settings.downloadDir}</b>.
+              {t.collision.bodyB}
             </p>
             <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" autoFocus disabled={adding} onClick={() => resolveCollision('replace')}>Replace file</button>
-              <button className="btn" disabled={adding} onClick={() => resolveCollision('rename')}>Keep both</button>
-              <button className="btn" disabled={adding} onClick={() => setPendingCollision(null)}>Cancel</button>
+              <button className="btn btn-primary" autoFocus disabled={adding} onClick={() => resolveCollision('replace')}>{t.collision.replace}</button>
+              <button className="btn" disabled={adding} onClick={() => resolveCollision('rename')}>{t.collision.keepBoth}</button>
+              <button className="btn" disabled={adding} onClick={() => setPendingCollision(null)}>{t.common.cancel}</button>
             </div>
           </div>
         </div>
       )}
 
       {showQueueModal && (
-        <div className="modal-overlay" onClick={() => { setShowQueueModal(null); setPendingQueueMove(null); }}>
+        <div className="modal-overlay" onClick={() => { setShowQueueModal(null); setPendingQueueMove(null); setQueueCreateReturn(null); }}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>{showQueueModal.mode === 'create' ? (<><FiPlus className="inline-icon" /> Create New Queue</>) : (<><FiEdit2 className="inline-icon" /> Edit Queue / Schedule</>)}</h2>
-            <p>{showQueueModal.mode === 'create' ? 'Group downloads and start them together, optionally on a schedule.' : 'Rename or schedule this queue.'}</p>
-            <label style={{ fontSize: 12 }}>Queue name *</label>
+            <h2>{showQueueModal.mode === 'create' ? (<><FiPlus className="inline-icon" /> {t.queueModal.createTitle}</>) : (<><FiEdit2 className="inline-icon" /> {t.queueModal.editTitle}</>)}</h2>
+            <p>{showQueueModal.mode === 'create' ? t.queueModal.createDesc : t.queueModal.editDesc}</p>
+            <label style={{ fontSize: 12 }}>{t.queueModal.nameLabel}</label>
             <input
               className="input"
               autoFocus
+              dir="auto"
               value={qName}
               onChange={(e) => {
                 setQName(e.target.value);
@@ -3547,7 +3251,7 @@ export default function App() {
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && qName.trim()) saveQueueModal();
               }}
-              placeholder="e.g. Night batch"
+              placeholder={t.queueModal.namePlaceholder}
               style={qNameError ? { borderColor: 'var(--red)' } : undefined}
             />
             {qNameError && <div className="form-error">{qNameError}</div>}
@@ -3559,11 +3263,11 @@ export default function App() {
                   setQSchedOn(e.target.checked);
                   setQSchedError('');
                 }}
-              /> Run only on schedule
+              /> {t.queueModal.scheduleToggle}
             </label>
-            <div className="row" style={{ marginTop: 8 }}>
+            <div className="row" style={{ marginTop: 8, opacity: qSchedOn ? 1 : 0.45 }}>
               <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12 }}>Start</label>
+                <label style={{ fontSize: 12, color: qSchedOn ? undefined : 'var(--muted)' }}>{t.queueModal.startLabel}</label>
                 <input
                   className="input"
                   type="text"
@@ -3582,7 +3286,7 @@ export default function App() {
                 />
               </div>
               <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12 }}>Stop</label>
+                <label style={{ fontSize: 12, color: qSchedOn ? undefined : 'var(--muted)' }}>{t.queueModal.stopLabel}</label>
                 <input
                   className="input"
                   type="text"
@@ -3602,20 +3306,20 @@ export default function App() {
               </div>
             </div>
             {qSchedError && <div className="form-error">{qSchedError}</div>}
-            <label style={{ fontSize: 12, marginTop: 12, display: 'block' }}>When queue finishes (all completed)</label>
-            <select className="input" value={qPower} onChange={(e) => setQPower(normalizeQueuePowerAction(e.target.value))} title="Power action runs 60s after every file in this queue completes">
-              {QUEUE_POWER_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            <label style={{ fontSize: 12, marginTop: 12, display: 'block' }}>{t.queueModal.powerLabel}</label>
+            <select className="input" value={qPower} onChange={(e) => setQPower(normalizeQueuePowerAction(e.target.value))} title={t.queueModal.powerTitle}>
+              {queuePowerOptions(t.power).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
-            <div className="form-hint" style={{ margin: '4px 0 0' }}>Off by default. Fires only when every file in this queue is completed.</div>
+            <div className="form-hint" style={{ margin: '4px 0 0' }}>{t.queueModal.powerHint}</div>
             <div className="row" style={{ marginTop: 14 }}>
               <button
                 className="btn btn-primary"
                 onClick={saveQueueModal}
                 disabled={!qName.trim() || (qSchedOn && (!normalizeTime24h(qStart) || !normalizeTime24h(qStop)))}
               >
-                {showQueueModal.mode === 'create' ? 'Create queue' : 'Save changes'}
+                {showQueueModal.mode === 'create' ? t.queueModal.create : t.queueModal.save}
               </button>
-              <button className="btn" onClick={() => { setShowQueueModal(null); setPendingQueueMove(null); }}>Cancel</button>
+              <button className="btn" onClick={() => { setShowQueueModal(null); setPendingQueueMove(null); setQueueCreateReturn(null); }}>{t.common.cancel}</button>
             </div>
           </div>
         </div>
@@ -3624,63 +3328,79 @@ export default function App() {
       {showSettings && draftSettings && (
         <div className="modal-overlay" onClick={attemptCloseSettings}>
           <div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiSettings className="inline-icon" /> Settings</h2>
-            <p>Queue, speed limit & proxy.</p>
-            <label style={{ fontSize: 12 }}>Default download folder</label>
-            <div className="row">
-              <input className="input" value={draftSettings.downloadDir} onChange={(e) => setDraftSettings({ ...draftSettings, downloadDir: e.target.value })} />
-              <button className="btn" onClick={async () => { const f = await window.jetro?.pickFolder(); if (f) setDraftSettings((s: any) => ({ ...s, downloadDir: f })); }}>…</button>
+            <h2 className="modal-title"><FiSettings className="inline-icon" /> {t.settings.title}</h2>
+            <p>{t.settings.subtitle}</p>
+            <label style={{ fontSize: 12 }}>{t.settings.downloadFolder}</label>
+            <div className="row dir-row">
+              <input className="input" dir="ltr" value={draftSettings.downloadDir} onChange={(e) => setDraftSettings({ ...draftSettings, downloadDir: e.target.value })} />
+              <button className="btn" title={t.common.chooseFolderTitle} onClick={async () => { const f = await window.jetro?.pickFolder(); if (f) setDraftSettings((s: any) => ({ ...s, downloadDir: f })); }}><FiFolder size={16} /></button>
             </div>
             <div className="row">
-              <div style={{ flex: 1 }}><label style={{ fontSize: 12 }}>Connections</label>
+              <div style={{ flex: 1 }}><label style={{ fontSize: 12 }}>{t.settings.connections}</label>
                 <select
                   className="input"
                   value={normalizeConnectionOption(draftSettings.maxConnections)}
                   onChange={(e) => setDraftSettings({ ...draftSettings, maxConnections: Number(e.target.value) })}
                 >
-                  {CONNECTION_OPTIONS.map((n) => <option key={n} value={n}>{n} connections</option>)}
+                  {CONNECTION_OPTIONS.map((n) => <option key={n} value={n}>{t.common.connections(n)}</option>)}
                   {!CONNECTION_OPTIONS.includes(normalizeConnectionOption(draftSettings.maxConnections)) && (
-                    <option value={normalizeConnectionOption(draftSettings.maxConnections)}>{normalizeConnectionOption(draftSettings.maxConnections)} connections</option>
+                    <option value={normalizeConnectionOption(draftSettings.maxConnections)}>{t.common.connections(normalizeConnectionOption(draftSettings.maxConnections))}</option>
                   )}
                 </select></div>
-              <div style={{ flex: 1 }}><label style={{ fontSize: 12 }}>Concurrent downloads</label>
+              <div style={{ flex: 1 }}><label style={{ fontSize: 12 }}>{t.settings.concurrent}</label>
                 <input className="input" type="number" min={1} max={10} value={draftSettings.maxConcurrentDownloads} onChange={(e) => setDraftSettings({ ...draftSettings, maxConcurrentDownloads: Number(e.target.value) })} /></div>
             </div>
-            <label style={{ fontSize: 12 }}>Speed limit</label>
+            <label style={{ fontSize: 12 }}>{t.settings.speedLimit}</label>
             <select
               className="input"
               value={Math.max(0, Math.round(Number(draftSettings.speedLimitKBps) || 0))}
               onChange={(e) => setDraftSettings({ ...draftSettings, speedLimitKBps: Number(e.target.value) })}
             >
-              {SPEED_LIMIT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              {!SPEED_LIMIT_OPTIONS.some((o) => o.value === Math.max(0, Math.round(Number(draftSettings.speedLimitKBps) || 0))) && (
+              {speedLimitOptions(t.speedLimit).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              {!speedLimitOptions(t.speedLimit).some((o) => o.value === Math.max(0, Math.round(Number(draftSettings.speedLimitKBps) || 0))) && (
                 <option value={Math.max(0, Math.round(Number(draftSettings.speedLimitKBps) || 0))}>
-                  {speedLimitLabel(draftSettings.speedLimitKBps)}
+                  {speedLimitLabel(draftSettings.speedLimitKBps, t.speedLimit)}
                 </option>
               )}
             </select>
-            <label style={{ fontSize: 13 }}><input type="checkbox" checked={!!draftSettings.autoCaptureClipboard} onChange={(e) => setDraftSettings({ ...draftSettings, autoCaptureClipboard: e.target.checked })} /> Clipboard auto-capture</label>
+            <label style={{ fontSize: 13 }}><input type="checkbox" checked={!!draftSettings.autoCaptureClipboard} onChange={(e) => setDraftSettings({ ...draftSettings, autoCaptureClipboard: e.target.checked })} /> {t.settings.clipboard}</label>
             <div className="settings-section">
-              <h3 className="settings-section-title"><FiRotateCcw className="inline-icon" /> Auto-retry</h3>
-              <p className="settings-section-sub">Failed downloads are re-queued with backoff instead of stopping at error.</p>
-              <label style={{ fontSize: 13 }}><input type="checkbox" checked={draftSettings.autoRetryEnabled !== false} onChange={(e) => setDraftSettings({ ...draftSettings, autoRetryEnabled: e.target.checked })} /> Retry failed downloads</label>
+              <h3 className="settings-section-title"><FiRotateCcw className="inline-icon" /> {t.settings.retrySection}</h3>
+              <p className="settings-section-sub">{t.settings.retrySub}</p>
+              <label style={{ fontSize: 13 }}><input type="checkbox" checked={draftSettings.autoRetryEnabled !== false} onChange={(e) => setDraftSettings({ ...draftSettings, autoRetryEnabled: e.target.checked })} /> {t.settings.retryToggle}</label>
               <div className="row">
-                <div style={{ flex: 1 }}><label style={{ fontSize: 12 }}>Max retries</label>
+                <div style={{ flex: 1 }}><label style={{ fontSize: 12 }}>{t.settings.maxRetries}</label>
                   <input className="input" type="number" min={0} max={10} value={Math.min(10, Math.max(0, Math.round(Number(draftSettings.maxRetries ?? 3))))} onChange={(e) => setDraftSettings({ ...draftSettings, maxRetries: Number(e.target.value) })} /></div>
-                <div style={{ flex: 1 }}><label style={{ fontSize: 12 }}>Base delay (sec)</label>
+                <div style={{ flex: 1 }}><label style={{ fontSize: 12 }}>{t.settings.baseDelay}</label>
                   <input className="input" type="number" min={1} max={300} value={Math.min(300, Math.max(1, Math.round(Number(draftSettings.retryDelaySec ?? 5))))} onChange={(e) => setDraftSettings({ ...draftSettings, retryDelaySec: Number(e.target.value) })} /></div>
               </div>
             </div>
 
             <div className="settings-section">
-              <h3 className="settings-section-title"><FiBox className="inline-icon" /> App</h3>
-              <p className="settings-section-sub">Appearance & tray behavior.</p>
-              <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>Appearance</label>
-              <div className="theme-segment" role="radiogroup" aria-label="Appearance">
+              <h3 className="settings-section-title"><FiBox className="inline-icon" /> {t.settings.appSection}</h3>
+              <p className="settings-section-sub">{t.settings.appSub}</p>
+              <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>{t.language.label}</label>
+              <div className="theme-segment lang-segment" data-active={lang} role="radiogroup" aria-label={t.language.label}>
                 {([
-                  { key: 'light', label: 'Light', Icon: FiSun },
-                  { key: 'dark', label: 'Dark', Icon: FiMoon },
-                  { key: 'system', label: 'System', Icon: FiMonitor },
+                  { key: 'en', label: t.language.english },
+                  { key: 'fa', label: t.language.persian },
+                ] as const).map(({ key, label }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    role="radio"
+                    aria-checked={lang === key}
+                    className={lang === key ? 'active' : ''}
+                    onClick={() => setLang(key)}
+                  ><span key={label} className="lang-label">{label}</span></button>
+                ))}
+              </div>
+              <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>{t.settings.appearance}</label>
+              <div className="theme-segment" role="radiogroup" aria-label={t.settings.appearance}>
+                {([
+                  { key: 'light', label: t.settings.light, Icon: FiSun },
+                  { key: 'dark', label: t.settings.dark, Icon: FiMoon },
+                  { key: 'system', label: t.settings.system, Icon: FiMonitor },
                 ] as const).map(({ key, label, Icon }) => (
                   <button
                     key={key}
@@ -3697,37 +3417,40 @@ export default function App() {
                   ><Icon size={14} /> {label}</button>
                 ))}
               </div>
-              <label style={{ fontSize: 12 }}>When I click the X button</label>
+              <label style={{ fontSize: 12 }}>{t.settings.closeAction}</label>
               <select
                 className="input"
                 value={draftSettings.closeAction || 'ask'}
                 onChange={(e) => setDraftSettings({ ...draftSettings, closeAction: e.target.value })}
               >
-                <option value="ask">Ask every time</option>
-                <option value="minimize">Minimize to tray</option>
-                <option value="exit">Exit app</option>
+                <option value="ask">{t.settings.ask}</option>
+                <option value="minimize">{t.settings.minimize}</option>
+                <option value="exit">{t.settings.exit}</option>
               </select>
             </div>
 
-            <div className="settings-section">
-              <h3 className="settings-section-title"><FiGlobe className="inline-icon" /> Proxy</h3>
-              <p className="settings-section-sub">Route all download traffic through a proxy. Applies to new requests immediately.</p>
-              <label style={{ fontSize: 12 }}>Proxy mode</label>
+            <div
+              ref={proxySectionRef}
+              className={'settings-section' + (proxyHighlight ? ' settings-section-highlight' : '')}
+            >
+              <h3 className="settings-section-title"><FiGlobe className="inline-icon" /> {t.settings.proxySection}</h3>
+              <p className="settings-section-sub">{t.settings.proxySub}</p>
+              <label style={{ fontSize: 12 }}>{t.settings.proxyMode}</label>
               <select
                 className="input"
                 value={draftSettings.proxyMode || 'none'}
                 onChange={(e) => setDraftSettings({ ...draftSettings, proxyMode: e.target.value })}
               >
-                <option value="none">No proxy (direct connection)</option>
-                <option value="system">Use system proxy</option>
-                <option value="custom">Custom proxy</option>
+                <option value="none">{t.settings.proxyNone}</option>
+                <option value="system">{t.settings.proxySystem}</option>
+                <option value="custom">{t.settings.proxyCustom}</option>
               </select>
 
               {(draftSettings.proxyMode || 'none') === 'custom' && (
                 <>
-                  <div className="row">
-                    <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: 12 }}>Type</label>
+                  <div className="row select-row">
+                    <div className="proxy-type-wrap">
+                      <label style={{ fontSize: 12 }}>{t.settings.proxyType}</label>
                       <select className="input" value={draftSettings.proxyType || 'http'} onChange={(e) => setDraftSettings({ ...draftSettings, proxyType: e.target.value })}>
                         <option value="http">HTTP</option>
                         <option value="https">HTTPS</option>
@@ -3735,22 +3458,22 @@ export default function App() {
                         <option value="socks5">SOCKS5</option>
                       </select>
                     </div>
-                    <div style={{ flex: 2 }}>
-                      <label style={{ fontSize: 12 }}>Host</label>
-                      <input className="input" placeholder="proxy.example.com" value={draftSettings.proxyHost || ''} onChange={(e) => setDraftSettings({ ...draftSettings, proxyHost: e.target.value })} />
+                    <div className="proxy-host-wrap">
+                      <label style={{ fontSize: 12 }}>{t.settings.proxyHost}</label>
+                      <input className="input" placeholder={t.settings.proxyHostPlaceholder} value={draftSettings.proxyHost || ''} onChange={(e) => setDraftSettings({ ...draftSettings, proxyHost: e.target.value })} />
                     </div>
-                    <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: 12 }}>Port</label>
+                    <div className="proxy-port-wrap">
+                      <label style={{ fontSize: 12 }}>{t.settings.proxyPort}</label>
                       <input className="input" type="number" min={1} max={65535} value={draftSettings.proxyPort || 8080} onChange={(e) => setDraftSettings({ ...draftSettings, proxyPort: Number(e.target.value) })} />
                     </div>
                   </div>
                   <div className="row">
                     <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: 12 }}>Username (optional)</label>
+                      <label style={{ fontSize: 12 }}>{t.settings.proxyUser}</label>
                       <input className="input" autoComplete="off" value={draftSettings.proxyUser || ''} onChange={(e) => setDraftSettings({ ...draftSettings, proxyUser: e.target.value })} />
                     </div>
                     <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: 12 }}>Password (optional)</label>
+                      <label style={{ fontSize: 12 }}>{t.settings.proxyPass}</label>
                       <input className="input" type="password" autoComplete="new-password" value={draftSettings.proxyPass || ''} onChange={(e) => setDraftSettings({ ...draftSettings, proxyPass: e.target.value })} />
                     </div>
                   </div>
@@ -3759,43 +3482,43 @@ export default function App() {
 
               {(draftSettings.proxyMode || 'none') !== 'none' && (
                 <>
-                  <label style={{ fontSize: 12 }}>Bypass (comma-separated, always skips localhost)</label>
-                  <input className="input" placeholder="localhost,127.0.0.1,::1" value={draftSettings.proxyBypass || ''} onChange={(e) => setDraftSettings({ ...draftSettings, proxyBypass: e.target.value })} />
+                  <label style={{ fontSize: 12 }}>{t.settings.proxyBypass}</label>
+                  <input className="input" placeholder={t.settings.proxyBypassPlaceholder} value={draftSettings.proxyBypass || ''} onChange={(e) => setDraftSettings({ ...draftSettings, proxyBypass: e.target.value })} />
                 </>
               )}
             </div>
 
             <div className="settings-section">
-              <h3 className="settings-section-title"><FiTool className="inline-icon" /> Others</h3>
-              <p className="settings-section-sub">External tools used by Jetro.</p>
+              <h3 className="settings-section-title"><FiTool className="inline-icon" /> {t.settings.othersSection}</h3>
+              <p className="settings-section-sub">{t.settings.othersSub}</p>
               <div className="vpn-status-box">
                 <span className={'vpn-pill ' + (binStatus ? (binStatus.available ? 'on' : 'off') : '')}>
-                  {binStatus ? (binStatus.available ? `● yt-dlp ${binStatus.version || ''}` : '○ yt-dlp missing') : '… checking'}
+                  {binStatus ? (binStatus.available ? t.settings.ytdlp(binStatus.version || '') : t.settings.ytdlpMissing) : t.settings.checking}
                 </span>
                 <button
                   className="btn btn-small"
                   disabled={binRefreshing}
                   onClick={refreshBinStatus}
-                >{binRefreshing ? 'Checking…' : 'Refresh'}</button>
+                >{binRefreshing ? t.settings.checkingBtn : t.common.refresh}</button>
                 <button
                   className="btn btn-small"
-                  title={binStatus?.path ? `Open containing folder` : 'Tool location unknown'}
+                  title={binStatus?.path ? t.settings.openFolderTitle : t.settings.toolUnknown}
                   disabled={!binStatus?.path}
                   onClick={async () => {
                     if (!binStatus?.path || !hasBackend()) return;
                     try {
                       await window.jetro!.revealInFolder(binStatus.path);
                     } catch (e: any) {
-                      alert(e?.message || 'Could not open folder');
+                      alert(e?.message || t.common.couldNotOpenFolder);
                     }
                   }}
                 ><FiFolder className="btn-icon" /></button>
               </div>
               {binStatus?.path && <div className="settings-muted"><code style={{ wordBreak: 'break-all' }}>{binStatus.path}</code></div>}
-              <label style={{ fontSize: 13, marginTop: 10, display: 'block' }}><input type="checkbox" checked={draftSettings.checkUpdatesOnStart !== false} onChange={(e) => setDraftSettings({ ...draftSettings, checkUpdatesOnStart: e.target.checked })} /> Check for updates on startup</label>
+              <label style={{ fontSize: 13, marginTop: 10, display: 'block' }}><input type="checkbox" checked={draftSettings.checkUpdatesOnStart !== false} onChange={(e) => setDraftSettings({ ...draftSettings, checkUpdatesOnStart: e.target.checked })} /> {t.settings.updatesToggle}</label>
               <div className="vpn-status-box" style={{ marginTop: 8 }}>
                 <span className={'vpn-pill ' + (updateInfo ? (updateInfo.updateAvailable ? 'off' : 'on') : '')}>
-                  {updateChecking ? '… checking' : updateInfo ? (updateInfo.updateAvailable ? `● v${updateInfo.latest} available (you have v${updateInfo.current})` : `● v${updateInfo.current} up to date`) : '○ not checked'}
+                  {updateChecking ? t.settings.checking : updateInfo ? (updateInfo.updateAvailable ? t.settings.updateAvailable(updateInfo.latest, updateInfo.current) : t.settings.upToDate(updateInfo.current)) : t.settings.notChecked}
                 </span>
                 <button
                   className="btn btn-small"
@@ -3809,17 +3532,30 @@ export default function App() {
                     } catch {}
                     setUpdateChecking(false);
                   }}
-                >{updateChecking ? 'Checking…' : 'Check now'}</button>
+                >{updateChecking ? t.settings.checkingBtn : t.settings.checkNow}</button>
                 {updateInfo?.updateAvailable && (
-                  <button className="btn btn-small btn-primary" onClick={() => openExternalUrl(updateInfo.url || 'https://github.com/Erkalin/Jetro/releases')}>Download</button>
+                  <button className="btn btn-small btn-primary" onClick={() => openExternalUrl(updateInfo.url || 'https://github.com/Erkalin/Jetro/releases')}>{t.settings.updateDownload}</button>
                 )}
               </div>
               {updateInfo?.error && <div className="settings-muted">{updateInfo.error}</div>}
             </div>
 
+            <div className="settings-section">
+              <div className="danger-zone">
+                <div className="danger-zone-text">
+                  <h3 className="danger-zone-title">{t.settings.dangerSection}</h3>
+                  <p className="danger-zone-sub">{t.settings.dangerSub}</p>
+                </div>
+                <button
+                  className="btn btn-small btn-danger"
+                  onClick={() => { setResetError(''); setShowResetConfirm(true); }}
+                ><FiTrash2 className="btn-icon" /> {t.settings.resetAll}</button>
+              </div>
+            </div>
+
             <div className="row modal-actions" style={{ marginTop: 14 }}>
-              <button className="btn" onClick={attemptCloseSettings}>Cancel</button>
-              <button className="btn btn-primary" onClick={saveSettingsAndClose}>Save</button>
+              <button className="btn" onClick={attemptCloseSettings}>{t.common.cancel}</button>
+              <button className="btn btn-primary" onClick={saveSettingsAndClose}>{t.common.save}</button>
             </div>
           </div>
         </div>
@@ -3828,11 +3564,25 @@ export default function App() {
       {showSettings && showDiscardConfirm && (
         <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => setShowDiscardConfirm(false)}>
           <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiXCircle className="inline-icon" /> Discard unsaved changes?</h2>
-            <p>You have unsaved changes in Settings. If you cancel now, your changes will be lost.</p>
+            <h2 className="modal-title"><FiXCircle className="inline-icon" /> {t.discard.title}</h2>
+            <p>{t.discard.body}</p>
             <div className="row" style={{ marginTop: 16 }}>
-              <button className="btn btn-primary" autoFocus onClick={() => setShowDiscardConfirm(false)}>Keep editing</button>
-              <button className="btn btn-danger" onClick={discardSettingsChanges}>Discard changes</button>
+              <button className="btn btn-primary" autoFocus onClick={() => setShowDiscardConfirm(false)}>{t.discard.keep}</button>
+              <button className="btn btn-danger" onClick={discardSettingsChanges}>{t.discard.discard}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSettings && showResetConfirm && (
+        <div className="modal-overlay" style={{ zIndex: 65 }} onClick={() => { if (!resetting) setShowResetConfirm(false); }}>
+          <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
+            <h2 className="modal-title"><FiTrash2 className="inline-icon" /> {t.resetConfirm.title}</h2>
+            <p>{t.resetConfirm.body}</p>
+            {resetError && <div className="form-error">{resetError}</div>}
+            <div className="row" style={{ marginTop: 16 }}>
+              <button className="btn" autoFocus disabled={resetting} onClick={() => setShowResetConfirm(false)}>{t.common.cancel}</button>
+              <button className="btn btn-danger" disabled={resetting} onClick={handleResetAll}>{resetting ? t.resetConfirm.resetting : t.resetConfirm.confirm}</button>
             </div>
           </div>
         </div>
@@ -3841,16 +3591,16 @@ export default function App() {
       {showClosePrompt && (
         <div className="modal-overlay" style={{ zIndex: 70 }} onClick={() => decideClose('cancel')}>
           <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiXCircle className="inline-icon" /> Close Jetro?</h2>
-            <p>Do you want to exit Jetro or minimize it to the tray?</p>
-            <p className="settings-section-sub">Minimized, Jetro keeps running in the tray and downloads continue.</p>
+            <h2 className="modal-title"><FiXCircle className="inline-icon" /> {t.closePrompt.title}</h2>
+            <p>{t.closePrompt.body}</p>
+            <p className="settings-section-sub">{t.closePrompt.sub}</p>
             <label style={{ fontSize: 13, display: 'block' }}>
-              <input type="checkbox" checked={closeRemember} onChange={(e) => setCloseRemember(e.target.checked)} /> Remember my choice
+              <input type="checkbox" checked={closeRemember} onChange={(e) => setCloseRemember(e.target.checked)} /> {t.closePrompt.remember}
             </label>
             <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" autoFocus onClick={() => decideClose('minimize')}>Minimize to tray</button>
-              <button className="btn btn-danger" onClick={() => decideClose('exit')}>Exit Jetro</button>
-              <button className="btn" onClick={() => decideClose('cancel')}>Cancel</button>
+              <button className="btn btn-primary" autoFocus onClick={() => decideClose('minimize')}>{t.closePrompt.minimize}</button>
+              <button className="btn btn-danger" onClick={() => decideClose('exit')}>{t.closePrompt.exit}</button>
+              <button className="btn" onClick={() => decideClose('cancel')}>{t.common.cancel}</button>
             </div>
           </div>
         </div>
@@ -3859,8 +3609,8 @@ export default function App() {
       {powerDialog && (
         <div className="modal-overlay" style={{ zIndex: 75 }}>
           <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title">Queue finished — {queuePowerLabel(powerDialog.action)} in {powerDialog.secondsLeft}s</h2>
-            <p>Every file in “{powerDialog.queueName}” is completed. Your PC will {queuePowerLabel(powerDialog.action).toLowerCase()} automatically. You can cancel below.</p>
+            <h2 className="modal-title">{t.powerDialog.title(queuePowerLabel(powerDialog.action, t.power), powerDialog.secondsLeft)}</h2>
+            <p>{t.powerDialog.body(powerDialog.queueName, queuePowerLabel(powerDialog.action, t.power))}</p>
             <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
               <button
                 className="btn btn-primary"
@@ -3869,14 +3619,14 @@ export default function App() {
                   try { await window.jetro?.powerExecute?.(powerDialog.queueId); } catch {}
                   setPowerDialog(null);
                 }}
-              >{queuePowerLabel(powerDialog.action)} now</button>
+              >{t.powerDialog.now(queuePowerLabel(powerDialog.action, t.power))}</button>
               <button
                 className="btn"
                 onClick={async () => {
                   try { await window.jetro?.powerCancel?.(powerDialog.queueId); } catch {}
                   setPowerDialog(null);
                 }}
-              >Cancel</button>
+              >{t.common.cancel}</button>
             </div>
           </div>
         </div>
@@ -3886,10 +3636,10 @@ export default function App() {
         <div className="modal-overlay complete-overlay" onClick={dismissCompletedPopup}>
           <div className="modal complete-modal" onClick={(e) => e.stopPropagation()}>
             <div className="complete-glow" />
-            <button className="complete-close" title="Dismiss" onClick={dismissCompletedPopup}><FiX size={16} /></button>
+            <button className="complete-close" title={t.complete.dismissTitle} onClick={dismissCompletedPopup}><FiX size={16} /></button>
             <div className="complete-icon"><FiCheckCircle size={34} /></div>
-            <h2 className="complete-title">Download complete</h2>
-            <p className="complete-sub">Your file is ready</p>
+            <h2 className="complete-title">{t.complete.title}</h2>
+            <p className="complete-sub">{t.complete.sub}</p>
             <div className="complete-file">
               <div className="complete-file-icon"><OsFileIcon item={completedPopup} /></div>
               <div className="complete-file-info">
@@ -3902,7 +3652,7 @@ export default function App() {
               </div>
             </div>
             {completedQueue.length > 1 && (
-              <div className="complete-more">+{completedQueue.length - 1} more finished</div>
+              <div className="complete-more">{t.complete.more(completedQueue.length - 1)}</div>
             )}
             <div className="row complete-actions">
               <button
@@ -3912,11 +3662,11 @@ export default function App() {
                   try {
                     await window.jetro!.openFile(completedPopup.savePath);
                   } catch (e: any) {
-                    alert(e?.message || 'Could not open file');
+                    alert(e?.message || t.common.couldNotOpenFile);
                   }
                   dismissCompletedPopup();
                 }}
-              ><FiFileText className="btn-icon" /> Open file</button>
+              ><FiFileText className="btn-icon" /> {t.complete.openFile}</button>
               <button
                 className="btn"
                 onClick={async () => {
@@ -3924,13 +3674,13 @@ export default function App() {
                   try {
                     await window.jetro!.revealInFolder(completedPopup.savePath);
                   } catch (e: any) {
-                    alert(e?.message || 'Could not open folder');
+                    alert(e?.message || t.common.couldNotOpenFolder);
                   }
                   dismissCompletedPopup();
                 }}
-              ><FiFolder className="btn-icon" /> Open folder</button>
+              ><FiFolder className="btn-icon" /> {t.complete.openFolder}</button>
             </div>
-            <button className="complete-dismiss" onClick={dismissCompletedPopup}>Dismiss</button>
+            <button className="complete-dismiss" onClick={dismissCompletedPopup}>{t.common.dismiss}</button>
           </div>
         </div>
       )}
@@ -3940,15 +3690,15 @@ export default function App() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h2 className="modal-title">
               {pendingRemove.deleteFile ? (
-                <><FiTrash2 className="inline-icon" /> Delete download?</>
+                <><FiTrash2 className="inline-icon" /> {t.removeConfirm.deleteTitle}</>
               ) : (
-                <><FiXCircle className="inline-icon" /> Cancel download?</>
+                <><FiXCircle className="inline-icon" /> {t.removeConfirm.cancelTitle}</>
               )}
             </h2>
             <p>
               {pendingRemove.deleteFile
-                ? 'This will delete the downloaded file from your disk and remove it from the list. This cannot be undone.'
-                : 'This download is not complete yet. Removing it will stop the download and discard its progress.'}
+                ? t.removeConfirm.deleteBody
+                : t.removeConfirm.cancelBody}
             </p>
             <div className="complete-file">
               <div className="complete-file-icon"><OsFileIcon item={pendingRemoveItem} /></div>
@@ -3963,7 +3713,7 @@ export default function App() {
                     </>
                   ) : (
                     <>
-                      <span style={{ color: statusColor(pendingRemoveItem.status), fontWeight: 700 }}>{statusLabel(pendingRemoveItem.status)}</span>
+                      <span style={{ color: statusColor(pendingRemoveItem.status), fontWeight: 700 }}>{statusLabel(pendingRemoveItem.status, t.status)}</span>
                       <span className="complete-dot-sep">•</span>
                       <span>{pendingRemoveItem.totalBytes ? `${Math.min(100, (pendingRemoveItem.downloadedBytes / pendingRemoveItem.totalBytes) * 100).toFixed(1)}%` : fmtBytes(pendingRemoveItem.downloadedBytes)}</span>
                       <span className="complete-dot-sep">•</span>
@@ -3975,7 +3725,7 @@ export default function App() {
             </div>
             <div className="row" style={{ marginTop: 16 }}>
               <button className="btn btn-primary" autoFocus onClick={() => setPendingRemove(null)}>
-                {pendingRemove.deleteFile ? 'Keep file' : 'Keep downloading'}
+                {pendingRemove.deleteFile ? t.removeConfirm.keepFile : t.removeConfirm.keepDownloading}
               </button>
               <button
                 className="btn btn-danger"
@@ -3983,7 +3733,7 @@ export default function App() {
                   window.jetro?.remove(pendingRemoveItem.id, pendingRemove.deleteFile);
                   setPendingRemove(null);
                 }}
-              >{pendingRemove.deleteFile ? 'Delete file' : 'Remove download'}</button>
+              >{pendingRemove.deleteFile ? t.removeConfirm.deleteFile : t.removeConfirm.removeDownload}</button>
             </div>
           </div>
         </div>
@@ -3992,12 +3742,13 @@ export default function App() {
       {renameState && (
         <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => { if (!renaming) setRenameState(null); }}>
           <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiEdit2 className="inline-icon" /> Rename</h2>
-            <p>Enter a new name for this download. The file on disk is renamed too.</p>
-            <label className="form-label">File name</label>
+            <h2 className="modal-title"><FiEdit2 className="inline-icon" /> {t.renameModal.title}</h2>
+            <p>{t.renameModal.body}</p>
+            <label className="form-label">{t.renameModal.label}</label>
             <input
               className="input"
               autoFocus
+              dir="auto"
               value={renameState.name}
               onChange={(e) => setRenameState({ ...renameState, name: e.target.value, error: '' })}
               onKeyDown={(e) => {
@@ -4008,57 +3759,70 @@ export default function App() {
             />
             {renameState.error && <div className="form-error">{renameState.error}</div>}
             <div className="row" style={{ marginTop: 16 }}>
-              <button className="btn" disabled={renaming} onClick={() => setRenameState(null)}>Cancel</button>
+              <button className="btn" disabled={renaming} onClick={() => setRenameState(null)}>{t.common.cancel}</button>
               <button className="btn btn-primary" disabled={renaming || !renameState.name.trim()} onClick={saveRenameModal}>
-                {renaming ? 'Renaming…' : 'Rename'}
+                {renaming ? t.renameModal.renaming : t.common.rename}
               </button>
             </div>
           </div>
         </div>
       )}
 
+      {analyticsId && (() => {
+        const it = items.find((x) => x.id === analyticsId) || null;
+        if (!it) return null;
+        return (
+          <DownloadAnalytics
+            item={it}
+            queueName={it.queueId ? queueById(it.queueId)?.name || null : null}
+            stats={getSpeedStats(it.id)}
+            onClose={() => setAnalyticsId(null)}
+          />
+        );
+      })()}
+
       {propsId && (() => {
         const it = items.find((x) => x.id === propsId) || null;
         if (!it) return null;
         const pct = it.totalBytes ? Math.min(100, (it.downloadedBytes / it.totalBytes) * 100) : 0;
         const qn = it.queueId ? queueById(it.queueId)?.name : null;
-        const rows: [string, string][] = [
-          ['File name', it.filename],
-          ['URL', it.url],
-          ['Save path', it.savePath],
-          ['Status', `${statusLabel(it.status)}${it.status !== 'completed' ? ` — ${pct.toFixed(2)}%` : ''}`],
-          ['Size', it.status === 'completed'
+        const rows: [string, string, boolean?][] = [
+          [t.props.fileName, it.filename],
+          [t.props.url, it.url, true],
+          [t.props.savePath, it.savePath, true],
+          [t.props.status, `${statusLabel(it.status, t.status)}${it.status !== 'completed' ? ` — ${pct.toFixed(2)}%` : ''}`],
+          [t.props.size, it.status === 'completed'
             ? fmtBytes(it.totalBytes || it.downloadedBytes)
-            : `${fmtBytes(it.downloadedBytes)} / ${fmtSize(it.totalBytes, !!it.totalBytesIsEstimate)}`],
-          ['Speed', (it.status === 'downloading' || it.status === 'merging') ? fmtSpeed(it.speedBps || 0) : '—'],
-          ['Connections', `${it.connections}x${it.supportsRange ? '' : ' (single connection)'}`],
-          ['Category', it.category || 'other'],
-          ['Queue', qn || 'No queue'],
-          ['Created', it.createdAt ? new Date(it.createdAt).toLocaleString() : '—'],
-          ['Last try', fmtLastTryTitle(lastTryOf(it))],
+            : `${fmtBytes(it.downloadedBytes)} / ${fmtSize(it.totalBytes, !!it.totalBytesIsEstimate)}`, true],
+          [t.props.speed, (it.status === 'downloading' || it.status === 'merging') ? fmtSpeed(it.speedBps || 0) : '—', true],
+          [t.props.connections, `${it.connections}x${it.supportsRange ? '' : t.props.singleConn}`],
+          [t.props.category, it.category || t.props.other],
+          [t.props.queue, qn || t.common.noQueue],
+          [t.props.created, it.createdAt ? new Date(it.createdAt).toLocaleString(localeName) : '—'],
+          [t.props.lastTry, fmtLastTryTitle(lastTryOf(it), t.months.neverTried, localeName)],
         ];
-        if (it.via === 'ytdlp') rows.push(['Source', it.audioOnly ? `audio${it.videoHeight ? '' : ''}` : `video${it.videoHeight ? ` ${it.videoHeight}p` : ''}`]);
-        if (it.error) rows.push(['Error', it.error]);
+        if (it.via === 'ytdlp') rows.push([t.props.source, it.audioOnly ? t.props.audioSrc : t.props.videoSrc(it.videoHeight || 0)]);
+        if (it.error) rows.push([t.props.error, it.error]);
         return (
           <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => setPropsId(null)}>
             <div className="modal" style={{ width: 520 }} onClick={(e) => e.stopPropagation()}>
-              <h2 className="modal-title"><FiInfo className="inline-icon" /> Properties</h2>
+              <h2 className="modal-title"><FiInfo className="inline-icon" /> {t.props.title}</h2>
               <div className="complete-file" style={{ marginBottom: 12 }}>
                 <div className="complete-file-icon"><OsFileIcon item={it} /></div>
                 <div className="complete-file-info">
                   <div className="complete-file-name" title={`${it.filename}\n${it.savePath}`}>{it.filename}</div>
                   <div className="complete-file-meta">
-                    <span style={{ color: statusColor(it.status), fontWeight: 700 }}>{statusLabel(it.status)}</span>
+                    <span style={{ color: statusColor(it.status), fontWeight: 700 }}>{statusLabel(it.status, t.status)}</span>
                     <span className="complete-dot-sep">•</span>
                     <span>{pct.toFixed(1)}%</span>
                   </div>
                 </div>
               </div>
               <div className="props-table">
-                {rows.map(([k, v]) => (
+                {rows.map(([k, v, ltr]) => (
                   <div className="props-row" key={k}>
                     <div className="props-key">{k}</div>
-                    <div className="props-val" title={v}>{v}</div>
+                    <div className="props-val" dir={ltr ? 'ltr' : undefined} title={v}>{v}</div>
                   </div>
                 ))}
               </div>
@@ -4067,10 +3831,10 @@ export default function App() {
                   className="btn"
                   onClick={async () => {
                     if (!hasBackend()) return;
-                    try { await window.jetro!.revealInFolder(it.savePath); } catch (e: any) { alert(e?.message || 'Could not open folder'); }
+                    try { await window.jetro!.revealInFolder(it.savePath); } catch (e: any) { alert(e?.message || t.common.couldNotOpenFolder); }
                   }}
-                ><FiFolder className="btn-icon" /> Open Folder</button>
-                <button className="btn btn-primary" autoFocus onClick={() => setPropsId(null)}>Close</button>
+                ><FiFolder className="btn-icon" /> {t.complete.openFolder}</button>
+                <button className="btn btn-primary" autoFocus onClick={() => setPropsId(null)}>{t.common.close}</button>
               </div>
             </div>
           </div>

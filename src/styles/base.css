@@ -1,0 +1,44 @@
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  font-family: var(--font-main);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.55;
+  overflow: hidden;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+button, input, select, textarea {
+  font-family: var(--font-main);
+}
+::selection { background: var(--accent-soft-border); }
+
+/* Persian needs a taller line-height; inputs keep Latin metrics for URLs. */
+html[lang='fa'] {
+  --font-main: 'Iranyekan', 'Comfortaa', 'Segoe UI', system-ui, sans-serif;
+}
+html[lang='fa'] body {
+  line-height: 1.8;
+  letter-spacing: 0;
+}
+
+/* light blue + white background / deep navy + blue glow in dark */
+.app-bg {
+  position: fixed; inset: 0; z-index: 0;
+  background:
+    radial-gradient(700px 420px at 12% 8%, var(--bg-glow-1), transparent 60%),
+    radial-gradient(750px 480px at 88% 18%, var(--bg-glow-2), transparent 60%),
+    radial-gradient(650px 550px at 50% 105%, var(--bg-glow-3), transparent 60%),
+    var(--bg-gradient);
+  transition: background 0.25s ease;
+}
+.app-bg::after {
+  content: '';
+  position: absolute; inset: 0;
+  backdrop-filter: blur(2px);
+}
+.app-shell {
+  position: relative; z-index: 1;
+  display: flex; height: 100vh; gap: 16px; padding: 16px;
+}

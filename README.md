@@ -3,11 +3,14 @@
 <img src="src/assets/Jetro.png" alt="Jetro" width="200" />
 
 <p><strong>A modern download manager for Windows with a segmented multi-connection
-engine that can download video and audio from all social medias, with batch
-downloads, proxy support, and a modern UI.</strong></p>
+engine, video and audio downloads from social media platforms, batch
+downloads, proxy support, Persian and English UI, a browser extension,
+and a modern interface.</strong></p>
+
+<p><a href="README-fa.md">مستندات فارسی</a></p>
 
 <p>
-<a href="package.json"><img src="https://img.shields.io/badge/version-0.2.0-blue?style=for-the-badge" alt="Version" /></a>
+<a href="package.json"><img src="https://img.shields.io/badge/version-1.0.0-blue?style=for-the-badge" alt="Version" /></a>
   <a href="https://github.com/Erkalin/Jetro/releases"><img src="https://img.shields.io/badge/platform-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Platform" /></a>
   <a href="https://www.electronjs.org/"><img src="https://img.shields.io/badge/Electron-33-47848F?style=for-the-badge&logo=electron&logoColor=white" alt="Electron" /></a>
   <a href="https://react.dev/"><img src="https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React" /></a>
@@ -32,15 +35,15 @@ downloads, proxy support, and a modern UI.</strong></p>
 
 ## 📥 Download
 
-No installation needed — download, run, done. Get the latest version from the
+No installation is required. Download the latest version from the
 [**Releases page**](https://github.com/Erkalin/Jetro/releases).
 
 | OS | File | How to run |
 | -- | ---- | ---------- |
-| 🪟 Windows x64 | `Jetro <version>.exe` | Double-click to run |
+| 🪟 Windows x64 | `Jetro <version>.exe` | Run directly |
 
-The portable build includes everything needed for video & audio downloads
-(`yt-dlp`, `ffmpeg`/`ffprobe`, `quickjs`) — no separate installs required.
+The portable build includes all components required for video and audio downloads
+(`yt-dlp`, `ffmpeg`/`ffprobe`, `quickjs`). No separate installation is required.
 
 ## ✨ Features
 
@@ -81,13 +84,25 @@ Twitch, Facebook, X/Twitter and
 | 🕐 Scheduler | Per-queue 24-hour time windows (e.g. `22:00–07:00`, overnight supported) with `Run only on schedule` and `Start` / `Stop` (`HH:MM`) |
 | ⏻ Power action | `When queue finishes (all completed)`: `Do nothing` / `Sleep` / `Hibernate` / `Shutdown` / `Restart`, with a 60-second countdown dialog (`{Action} now` / `Cancel`); fires only when every file in the queue is completed |
 
-### 🎨 Appearance & System
+### 🎨 Appearance, Language & System
 
 | Feature | Description |
 | ------- | ----------- |
 | 🌗 Appearance | `Light` / `Dark` / `System` (follows OS), with live preview and a header sun/moon toggle |
+| 🌍 Language | Full `English` / `فارسی` UI from Settings → App, with RTL layout and bundled Iranyekan font |
 | 📌 System tray | `When I click the X button`: `Ask every time` / `Minimize to tray` / `Exit app`, with `Remember my choice`; tray menu with `Show` and `Quit`; single instance; downloads continue while minimized |
 | 🔄 Update check | `Check for updates on startup` plus manual `Check now` (GitHub Releases) and an in-app banner (`Download` / `Later`) |
+| 📊 Details & speed | Per-download view with live/average/peak speed, speed-over-time graph, per-connection progress, and server host/IP + location |
+
+### 🧩 Browser extension (new in v1.0.0)
+
+Jetro Resolver is located in `extension/` — a Chromium MV3 extension (Chrome,
+Edge, Brave, Opera, Vivaldi, with Firefox compatibility). Send any link,
+image, video, or page to Jetro via the context menu, or click a direct file
+link to open it in the application instead of the browser. Communication with
+the desktop application is handled via the `jetro://add?url=...` protocol
+(registered on first run). See
+[`extension/README.md`](extension/README.md) for installation instructions.
 
 ### 🌐 Network & Privacy
 
@@ -102,9 +117,10 @@ Twitch, Facebook, X/Twitter and
 
 - **General:** `Default download folder`, `Connections` (`1` / `4` / `8` / `16` / `32 connections`), `Concurrent downloads` (`1–10`), `Speed limit` (`Unlimited` … `10 MB/s`), `Clipboard auto-capture`.
 - **Auto-retry:** `Retry failed downloads`, `Max retries` (`0–10`), `Base delay (sec)` (`1–300`, exponential backoff).
-- **App:** `Appearance` (`Light` / `Dark` / `System`), `When I click the X button` (`Ask every time` / `Minimize to tray` / `Exit app`).
+- **App:** `Language` (`English` / `فارسی`), `Appearance` (`Light` / `Dark` / `System`), `When I click the X button` (`Ask every time` / `Minimize to tray` / `Exit app`).
 - **Proxy:** `Proxy mode`, `Type`, `Host`, `Port`, `Username (optional)`, `Password (optional)`, `Bypass`.
 - **Others:** `yt-dlp` status (`● yt-dlp {version}` / `○ yt-dlp missing`) with `Refresh` and folder reveal, `Check for updates on startup` with `Check now` / `Download`.
+- **Danger zone:** `Reset app…` — stops everything and clears the list, queues, settings and speed history (files on disk are kept).
 
 Other dialogs: `New download`, `New Batch Download` (step 1 options + step 2 `Batch links ({n})` resolving with `OK` / `Failed` rows and `Download ({n})`), `Change file format?` (`Download anyway` / `Use original name` / `Cancel`), `Create New Queue` / `Edit Queue`, `Discard unsaved changes?` (`Keep editing` / `Discard changes`), `Close Jetro?` (`Minimize to tray` / `Exit Jetro` / `Cancel`), `Download complete`, `Delete download?` / `Cancel download?` (`Keep file` / `Keep downloading` / `Delete file` / `Remove download`).
 
@@ -129,16 +145,16 @@ npm run app:dev
 
 | Command | Description |
 | ------- | ----------- |
-| `npm run dev` | 🌐 Vite dev server only (web preview, no backend) |
-| `npm run app:dev` | ▶️ Full app: Vite + Electron |
-| `npm run build` | 🔨 Type-check + production renderer build |
-| `npm run build:electron` | 🧩 Compile the Electron main process |
-| `npm run electron:build` | 📦 Build portable app for this OS → `release/` (`Jetro <version>.exe`) |
-| `npm run fetch:binaries` | ⬇️ Download yt-dlp / ffmpeg / quickjs into `bin/` |
-| `npm run test:engine` | 🧪 Engine-only download test, no GUI |
+| `npm run dev` | Vite dev server only (web preview, no backend) |
+| `npm run app:dev` | Full application: Vite + Electron |
+| `npm run build` | Type-check + production renderer build |
+| `npm run build:electron` | Compile the Electron main process |
+| `npm run electron:build` | Build portable app for this OS → `release/` (`Jetro <version>.exe`) |
+| `npm run fetch:binaries` | Download yt-dlp / ffmpeg / quickjs into `bin/` |
+| `npm run test:engine` | Engine-only download test, no GUI |
 
 ```powershell
-# 🧪 Test the engine headlessly (custom URL + output file supported)
+# Test the engine without the UI (custom URL + output file supported)
 npm run test:engine -- https://speed.hetzner.de/10MB.bin
 ```
 
@@ -149,15 +165,21 @@ npm run test:engine -- https://speed.hetzner.de/10MB.bin
 ```
 Jetro/
 ├── 📂 electron/            # Main process: window, IPC, engine, proxy, video
-│   ├── main.ts             # 🪟 App entry, BrowserWindow, tray, all IPC handlers
+│   ├── main.ts             # 🪟 App entry, BrowserWindow, tray, jetro:// protocol, all IPC handlers
 │   ├── preload.ts          # 🔒 Secure renderer bridge (contextIsolation)
-│   ├── downloader.ts       # ⚡ Segmented download engine
+│   ├── downloader.ts       # ⚡ Segmented download engine (global speed limit, smoothed speed)
 │   ├── proxy.ts            # 🌍 Proxy resolution
 │   └── binaries.ts         # 🛠️ yt-dlp / ffmpeg / quickjs resolution
+├── 📂 extension/           # 🧩 Jetro Resolver browser extension (MV3) + its own README
 ├── 📂 src/                 # Renderer (React)
 │   ├── App.tsx             # 🖥️ UI (cards/details, video, batch, queues, settings)
-│   ├── main.tsx            # 🚪 React entry
-│   ├── index.css           # 🎨 Styles + light/dark themes
+│   ├── main.tsx            # 🚪 React entry (wraps App in LanguageProvider)
+│   ├── index.css           # 🎨 Style entry — imports per-area files in styles/
+│   ├── styles/             # 🎨 Split styles (settings, sidebar, modals, analytics, rtl, …)
+│   ├── locale/             # 🌍 en.ts + fa.ts strings + LanguageContext
+│   ├── components/         # 🧩 DownloadAnalytics, SpeedGraph, OsFileIcon, …
+│   ├── lib/ hooks/ api/    # 🛠️ Formatting, URL/batch helpers, speed history, backend wrapper
+│   ├── fonts/              # 🔤 Bundled Iranyekan (Persian) font
 │   ├── global.d.ts         # 📝 Renderer API typings
 │   └── assets/             # 🖼️ Images bundled by Vite (Jetro.png, Jetro-notext.png)
 ├── 📂 scripts/             # Dev/test scripts (never shipped)
@@ -191,23 +213,25 @@ graph LR
 
 Jetro probes `Accept-Ranges`, splits the file into N ranges downloaded over N
 parallel connections writing directly at file offsets, and resumes from a
-`.jetro.json` sidecar file. A global token bucket enforces the speed limit. 🚦
+`.jetro.json` sidecar file. A single global token bucket enforces the speed
+limit across all connections and concurrent downloads, and speed readings are
+smoothed to keep the displayed speed and ETA stable.
 
-Video & audio pages take a separate path: Jetro resolves them with the bundled
-`yt-dlp`, picks the selected height / audio format, then merges to `mp4` or
+Video and audio pages take a separate path: Jetro resolves them with the bundled
+`yt-dlp`, selects the requested height / audio format, then merges to `mp4` or
 extracts audio with the bundled `ffmpeg`. Playlists are expanded (first 50
-shown) so each entry becomes its own download. 🎬
+shown) so each entry becomes its own download.
 
 Batch downloads expand a `*` pattern into up to 200 URLs, resolve each link
-for filename and size, then add them lowest-first into a dedicated queue. 📦
+for filename and size, then add them lowest-first into a dedicated queue.
 
 ---
 
 ## 🤝 Contributing
 
-Issues and pull requests are welcome!
-Please check the [issues page](https://github.com/Erkalin/Jetro/issues) first. 💬
+Issues and pull requests are welcome.
+Please check the [issues page](https://github.com/Erkalin/Jetro/issues) first.
 
 ## 📄 License
 
-[MIT](LICENSE) © 2026 Erkalin 💙
+[MIT](LICENSE) © 2026 Erkalin

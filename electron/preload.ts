@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('jetro', {
   remove: (id: string, deleteFile?: boolean) => ipcRenderer.invoke('dl:remove', id, deleteFile),
   moveToQueue: (id: string, queueId?: string | null) => ipcRenderer.invoke('dl:move', id, queueId),
   list: () => ipcRenderer.invoke('dl:list'),
+  getSegments: (id: string) => ipcRenderer.invoke('dl:segments', id),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (s: any) => ipcRenderer.invoke('settings:save', s),
   pickFolder: (defaultPath?: string) => ipcRenderer.invoke('dialog:folder', defaultPath),
@@ -50,6 +51,11 @@ contextBridge.exposeInMainWorld('jetro', {
     ipcRenderer.on('clipboard-url', fn);
     return () => ipcRenderer.removeListener('clipboard-url', fn);
   },
+  onExternalUrl: (cb: (info: { url: string; source: string }) => void) => {
+    const fn = (_: any, info: { url: string; source: string }) => cb(info);
+    ipcRenderer.on('external-url', fn);
+    return () => ipcRenderer.removeListener('external-url', fn);
+  },
   onSettingsChanged: (cb: (s: any) => void) => {
     const fn = (_: any, s: any) => cb(s);
     ipcRenderer.on('settings:changed', fn);
@@ -62,7 +68,9 @@ contextBridge.exposeInMainWorld('jetro', {
   },
   decideClose: (opts: { decision: 'minimize' | 'exit' | 'cancel'; remember?: boolean }) =>
     ipcRenderer.invoke('app:close-decision', opts),
+  resetAll: () => ipcRenderer.invoke('app:reset-all'),
   openExternal: (url: string) => ipcRenderer.invoke('app:open-url', url),
+  getVersion: () => ipcRenderer.invoke('app:get-version'),
   checkUpdate: () => ipcRenderer.invoke('app:check-update'),
   powerExecute: (queueId: string) => ipcRenderer.invoke('power:execute', queueId),
   powerCancel: (queueId: string) => ipcRenderer.invoke('power:cancel', queueId),

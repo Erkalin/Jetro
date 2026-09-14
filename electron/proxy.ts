@@ -21,7 +21,7 @@ export type NetworkSettings = ProxySettings;
 
 export function defaultNetworkSettings(): NetworkSettings {
   return {
-    proxyMode: 'none',
+    proxyMode: 'system',
     proxyType: 'http',
     proxyHost: '',
     proxyPort: 8080,

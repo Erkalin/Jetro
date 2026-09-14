@@ -1,0 +1,103 @@
+.settings-modal { max-height: 88vh; overflow-y: auto; }
+.settings-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--sep);
+  border-radius: 12px;
+  transition: box-shadow 0.25s ease, background-color 0.25s ease;
+}
+/* Brief spotlight when opened via New Download → Proxy settings. */
+.settings-section-highlight {
+  background: var(--accent-soft-bg);
+  box-shadow: 0 0 0 2px var(--accent-soft-border);
+  padding-inline: 10px;
+  padding-bottom: 10px;
+}
+.settings-section-title { margin: 0 0 2px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.settings-section-sub { font-size: 12.5px; color: var(--muted); margin: 0 0 12px; }
+.settings-note {
+  background: var(--accent-soft-bg);
+  border: 1px solid var(--accent-soft-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+.settings-note code, .settings-muted code {
+  background: var(--code-bg);
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.settings-note-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.settings-muted { font-size: 12px; color: var(--muted); margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.btn-small { padding: 6px 12px; font-size: 12px; border-radius: 10px; }
+.vpn-status-box { display: flex; gap: 10px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
+.ip-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ip-eye { width: 26px; height: 26px; border-radius: 8px; }
+.ip-blurred { filter: blur(5px); user-select: none; pointer-events: none; }
+.vpn-pill {
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--input-border);
+  background: var(--hover-bg);
+  color: var(--muted);
+}
+.vpn-pill.on { background: var(--green-soft-bg); border-color: var(--green-soft-border); color: var(--green); }
+.vpn-pill.off { background: var(--red-soft-bg); border-color: var(--red-soft-border); color: var(--red); }
+
+/* theme segmented control in Settings > App */
+.theme-segment {
+  display: flex; gap: 6px;
+  background: var(--hover-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 4px;
+  margin-bottom: 10px;
+}
+.theme-segment button {
+  flex: 1;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px; font-weight: 700;
+  padding: 8px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: 0.15s;
+}
+.theme-segment button:hover { color: var(--text); background: var(--hover-bg); }
+.theme-segment button.active {
+  background: var(--surface-solid);
+  border-color: var(--glass-border);
+  color: var(--text);
+  box-shadow: var(--icon-shadow);
+}
+
+/* danger zone: full app reset at the end of Settings */
+.danger-zone {
+  border: 1px solid var(--red-soft-border);
+  background: var(--red-soft-bg);
+  border-radius: 12px;
+  padding: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.danger-zone-text { min-width: 0; flex: 1 1 200px; }
+.danger-zone-title { margin: 0 0 2px; font-size: 13.5px; font-weight: 800; color: var(--red); }
+.danger-zone-sub { margin: 0; font-size: 12px; color: var(--muted); }
+
+/* form helpers: theme-aware replacements for old hard-coded inline colors */
+.form-label { font-size: 12px; color: var(--muted); }
+.form-label-sm { font-size: 11px; color: var(--muted); }
+.form-hint { font-size: 12px; color: var(--muted); margin: -6px 0 10px; }
+.form-error { font-size: 12px; color: var(--red); margin: -6px 0 10px; }
+.form-error-mt { font-size: 12px; color: var(--red); margin-top: 6px; word-break: break-word; }
