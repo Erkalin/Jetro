@@ -1,0 +1,55 @@
+.toolbar {
+  display: flex; gap: 10px; align-items: center;
+  position: relative;
+  z-index: 30;
+  background: var(--glass-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px; padding: 10px 14px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(22px) saturate(1.4);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  transition: background-color 0.25s ease, border-color 0.25s ease;
+}
+.toolbar-sep { width: 1px; align-self: stretch; background: var(--glass-border); margin: 2px 4px; }
+.toolbar-dropdown { position: relative; }
+.dropdown-backdrop { position: fixed; inset: 0; z-index: 40; }
+.dropdown-menu {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 41;
+  min-width: 250px; max-width: min(340px, 90vw); width: max-content;
+  max-height: 300px; overflow-y: auto;
+  background: var(--menu-bg);
+  border: 1px solid var(--modal-border);
+  border-radius: 14px;
+  box-shadow: var(--menu-shadow);
+  padding: 6px;
+  backdrop-filter: blur(20px);
+}
+/* Persian queue names + " (در حال اجرا)" suffix run longer — give the menu more room. */
+html[lang='fa'] .dropdown-menu {
+  min-width: 280px; max-width: min(380px, 92vw);
+}
+.dropdown-empty { padding: 9px 12px; font-size: 13px; color: var(--muted); }
+.toolbar-spacer { flex: 1; }
+/* card/details view toggle */
+.view-toggle {
+  display: flex; gap: 4px;
+  background: var(--hover-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 3px;
+}
+.view-toggle-btn {
+  width: 32px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 9px;
+  background: transparent; color: var(--muted);
+  cursor: pointer; transition: 0.15s;
+}
+.view-toggle-btn:hover { color: var(--text); background: var(--hover-bg); }
+.view-toggle-btn.active {
+  background: var(--surface-solid);
+  border-color: var(--glass-border);
+  color: var(--text);
+  box-shadow: var(--icon-shadow);
+}
+

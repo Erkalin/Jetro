@@ -1,0 +1,111 @@
+/* Language-switch micro-animation — pure CSS, no dependencies.
+   The `lang-switch` class is toggled on <html> for ~450ms by
+   LanguageContext whenever EN <-> FA changes (never on first mount). */
+
+@keyframes lang-fade-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@keyframes lang-label-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes lang-pop {
+  0% { transform: scale(0.96); }
+  55% { transform: scale(1.015); }
+  100% { transform: scale(1); }
+}
+
+/* Staggered content entrance: sidebar first, main follows, open modal last. */
+html.lang-switch .app-shell > .sidebar {
+  animation: lang-fade-rise 0.3s cubic-bezier(0.32, 0.72, 0.35, 1) both;
+}
+html.lang-switch .app-shell > .main {
+  animation: lang-fade-rise 0.3s cubic-bezier(0.32, 0.72, 0.35, 1) 0.05s both;
+}
+html.lang-switch .modal {
+  animation: lang-fade-rise 0.28s cubic-bezier(0.32, 0.72, 0.35, 1) 0.08s both;
+}
+
+/* ---- Language segmented control: sliding thumb ---- */
+.lang-segment {
+  position: relative;
+  isolation: isolate;
+}
+.lang-segment::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  inset-inline-start: 4px;
+  width: calc(50% - 7px);
+  background: var(--surface-solid);
+  border: 1px solid var(--glass-border);
+  border-radius: 9px;
+  box-shadow: var(--icon-shadow);
+  z-index: 0;
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0.35, 1);
+  will-change: transform;
+}
+.lang-segment[data-active='en']::before {
+  transform: translateX(0);
+}
+.lang-segment[data-active='fa']::before {
+  transform: translateX(calc(100% + 6px));
+}
+/* In RTL the visual order flips (EN sits right), so glide the other way. */
+[dir='rtl'] .lang-segment[data-active='fa']::before {
+  transform: translateX(calc(-100% - 6px));
+}
+
+.lang-segment button {
+  position: relative;
+  z-index: 1;
+}
+.lang-segment button:active {
+  transform: scale(0.97);
+}
+/* The thumb now paints the active background — keep buttons transparent. */
+.lang-segment button.active {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  animation: lang-pop 0.25s ease;
+}
+.lang-segment .lang-label {
+  display: inline-block;
+}
+/* Replay the label fade on every switch (key changes with the string). */
+html.lang-switch .lang-segment .lang-label {
+  animation: lang-label-in 0.28s ease both;
+}
+
+/* Respect users who prefer no motion: instant swap, thumb still moves. */
+@media (prefers-reduced-motion: reduce) {
+  html.lang-switch .app-shell > .sidebar,
+  html.lang-switch .app-shell > .main,
+  html.lang-switch .modal,
+  html.lang-switch .lang-segment .lang-label,
+  .lang-segment button.active {
+    animation: none;
+  }
+  .lang-segment::before {
+    transition: none;
+  }
+}

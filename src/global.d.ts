@@ -61,6 +61,34 @@ declare global {
     userPath: string;
     bundled: string | null;
   }
+
+  /** One connection's byte range within a segmented download. */
+  interface DownloadSegmentInfo {
+    index: number;
+    start: number;
+    end: number;
+    downloaded: number;
+  }
+
+  /** Server location for the analytics view (one cached API lookup per IP). */
+  interface ServerGeo {
+    /** "Country, City" display label. */
+    label: string;
+    /** ISO 3166-1 alpha-2 code (e.g. "DE"), or null when unknown. */
+    countryCode: string | null;
+  }
+
+  /** Per-connection progress + server info for the analytics view. */
+  interface DownloadSegmentsInfo {
+    host: string;
+    ip: string | null;
+    /** Resolved once per IP via a cached API lookup, or null when unavailable. */
+    geo: ServerGeo | null;
+    /** Null when the backend has no segment data (yt-dlp transfer, never started). */
+    segments: DownloadSegmentInfo[] | null;
+    /** True while a live segmented-engine runner owns the download. */
+    live: boolean;
+  }
 }
 
 interface JetroAPI {
@@ -73,6 +101,7 @@ interface JetroAPI {
   remove: (id: string, deleteFile?: boolean) => Promise<void>;
   moveToQueue: (id: string, queueId?: string | null) => Promise<any>;
   list: () => Promise<any[]>;
+  getSegments: (id: string) => Promise<DownloadSegmentsInfo | null>;
   getSettings: () => Promise<any>;
   saveSettings: (s: any) => Promise<any>;
   pickFolder: (defaultPath?: string) => Promise<string | null>;
@@ -85,7 +114,7 @@ interface JetroAPI {
   renameDownload: (id: string, newName: string) => Promise<any>;
   redownload: (id: string) => Promise<any>;
   refreshDownload: (id: string) => Promise<any>;
-  probeVideo: (url: string, opts?: any) => Promise<{ formats: VideoFormat[]; hint: string; title?: string; detail?: string; needsCookies?: boolean; cookieError?: string; playlist?: { title: string; count: number; entries: PlaylistEntry[] } }>;
+  probeVideo: (url: string, opts?: any) => Promise<{ formats: VideoFormat[]; hint: string; title?: string; detail?: string; needsCookies?: boolean; cookieError?: string; proxyHint?: boolean; playlist?: { title: string; count: number; entries: PlaylistEntry[] } }>;
   downloadVideo: (opts: any) => Promise<any>;
   getBinaryStatus: () => Promise<BinaryStatus>;
   updateYtDlp: () => Promise<{ ok: boolean; version?: string; error?: string }>;
@@ -98,10 +127,13 @@ interface JetroAPI {
   onUpdate: (cb: (items: any[]) => void) => () => void;
   onQueues: (cb: (queues: QueueItem[]) => void) => () => void;
   onClipboardUrl: (cb: (url: string) => void) => () => void;
+  onExternalUrl?: (cb: (info: { url: string; source: string }) => void) => () => void;
   onSettingsChanged?: (cb: (s: any) => void) => () => void;
   onCloseRequest?: (cb: () => void) => () => void;
   decideClose?: (opts: { decision: 'minimize' | 'exit' | 'cancel'; remember?: boolean }) => Promise<any>;
+  resetAll: () => Promise<{ ok: boolean }>;
   openExternal?: (url: string) => Promise<boolean>;
+  getVersion?: () => Promise<string>;
   checkUpdate?: () => Promise<{ current: string; latest: string; updateAvailable: boolean; url: string; error?: string }>;
   powerExecute?: (queueId: string) => Promise<any>;
   powerCancel?: (queueId: string) => Promise<any>;

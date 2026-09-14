@@ -23,6 +23,10 @@
         document.documentElement.style.background = dark ? '#080f20' : '#ffffff';
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute('content', dark ? '#080f20' : '#f2f7fd');
+        // Apply the language direction before first paint (no LTR flash in Persian).
+        var lang = localStorage.getItem('jetro-lang') === 'fa' ? 'fa' : 'en';
+        document.documentElement.lang = lang;
+        document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
       } catch (e) {}
     </script>
     <style>

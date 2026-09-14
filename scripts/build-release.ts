@@ -3,8 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // electron-builder names the portable exe "${productName} ${version}.exe",
-// so version 0.2.0 becomes "Jetro 0.2.0.exe". Full x.y.z is used as-is
-// for cleaner blending with GitHub tags (v0.2.0, v0.3.0, ..., v1.0.0).
+// so version 1.0.0 becomes "Jetro 1.0.0.exe". Full x.y.z is used as-is
+// for cleaner blending with GitHub tags (v1.0.0).
 
 function main() {
   const root = process.cwd();

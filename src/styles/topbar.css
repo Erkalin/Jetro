@@ -1,0 +1,79 @@
+.main { flex: 1; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.topbar {
+  display: flex; gap: 10px; align-items: center;
+  background: var(--glass); border: 1px solid var(--glass-border);
+  border-radius: 18px; padding: 12px 16px;
+  backdrop-filter: blur(22px) saturate(1.4);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  box-shadow: var(--shadow);
+  transition: background-color 0.25s ease, border-color 0.25s ease;
+}
+/* Comfortaa for all buttons */
+.btn, .icon-btn, button {
+  font-family: var(--font-main);
+}
+.btn {
+  border: 1px solid var(--glass-border);
+  background: var(--surface);
+  color: var(--text); padding: 9px 16px; border-radius: 12px;
+  cursor: pointer; font-size: 13.5px; font-weight: 700;
+  letter-spacing: 0.2px;
+  transition: 0.15s;
+  box-shadow: var(--icon-shadow);
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+}
+.btn-icon { flex-shrink: 0; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; }
+.inline-icon { flex-shrink: 0; vertical-align: -2px; }
+.nav-label { display: inline-flex; align-items: center; gap: 8px; }
+.nav-icon { flex-shrink: 0; font-size: 15px; }
+.badge { display: inline-flex; align-items: center; gap: 4px; }
+.modal-title { display: flex; align-items: center; gap: 8px; }
+.queue-title { display: inline-flex; align-items: center; gap: 6px; }
+.queue-header-info { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.sidebar-path { display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.empty-big { display: flex; justify-content: center; color: var(--accent); }
+.file-fallback-icon { color: var(--accent); }
+.ctx-icon { display: inline-flex; align-items: center; }
+.btn:hover { background: var(--surface-solid); transform: translateY(-1px); box-shadow: var(--lift-shadow); }
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+  background: var(--surface);
+}
+.btn:disabled:hover { background: var(--surface); transform: none; box-shadow: none; }
+.btn-primary {
+  background: var(--btn-primary-bg);
+  color: #fff;
+  border: none; box-shadow: var(--btn-primary-shadow);
+}
+.btn-primary:hover { filter: brightness(1.08); background: var(--btn-primary-bg); }
+.btn-danger { background: var(--red-soft-bg); border-color: var(--red-soft-border); color: var(--red); }
+.btn-danger:hover { background: var(--red-soft-bg); }
+
+/* theme toggle in the topbar: glass sun/moon button */
+.theme-toggle {
+  width: 38px; height: 38px; border-radius: 12px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface); border: 1px solid var(--glass-border);
+  color: var(--muted); cursor: pointer;
+  box-shadow: var(--icon-shadow);
+  transition: transform 0.18s ease, background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+.theme-toggle:hover { color: var(--text); background: var(--surface-solid); transform: translateY(-1px) rotate(-8deg); box-shadow: var(--lift-shadow); }
+.theme-toggle:active { transform: translateY(0) scale(0.96); }
+.theme-toggle svg { transition: transform 0.25s ease; }
+
+.search {
+  flex: 1; background: var(--surface); border: 1px solid var(--glass-border);
+  border-radius: 12px; padding: 9px 14px; color: var(--text); outline: none;
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.search::placeholder { color: var(--faint); }
+.search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--input-focus-ring); }
+.list {
+  flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  padding-right: 4px;
+}

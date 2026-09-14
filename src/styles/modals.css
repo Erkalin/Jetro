@@ -1,0 +1,122 @@
+.modal-overlay { position: fixed; inset: 0; background: var(--overlay); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 10; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.modal { width: 560px; max-width: 92vw; max-height: calc(100vh - 32px); overflow-y: auto; overscroll-behavior: contain; background: var(--modal-bg); border: 1px solid var(--modal-border); border-radius: 20px; padding: 24px; box-shadow: var(--modal-shadow); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); color: var(--text); transition: background-color 0.25s ease, border-color 0.25s ease; }
+.modal h2 { margin: 0 0 4px; font-size: 18px; }
+.modal p { margin: 0 0 16px 6px; font-size: 13px; color: var(--muted); }
+.input, select.input, textarea.input { width: 100%; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 12px; padding: 11px 14px; color: var(--text); outline: none; margin-bottom: 10px; font-size: 14px; transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease; }
+.input::placeholder, textarea.input::placeholder { color: var(--faint); }
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--input-focus-ring); }
+.input:disabled { opacity: 0.45; cursor: not-allowed; background: var(--surface); }
+select.input option { background: var(--surface-solid); color: var(--text); }
+/* Custom dropdown arrow pinned close inside the box edge (native arrows sit too far out). */
+select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-inline-end: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px;
+  cursor: pointer;
+}
+[dir='rtl'] select.input {
+  background-position: left 10px center;
+}
+[data-theme="dark"] select.input {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+select.input {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* ---- Native dropdown sizes: compact values must not stretch, long queue
+   names must not squeeze. Tuned for both English and Persian. ---- */
+/* Short fixed values: "8 connections" / "۸ اتصال", "Unlimited", power actions. */
+select.input.select-conns {
+  flex: 0 1 180px;
+  width: auto;
+  min-width: 168px;
+  max-width: 210px;
+  margin-bottom: 0;
+}
+html[lang='fa'] select.input.select-conns {
+  flex-basis: 150px;
+  min-width: 138px;
+  max-width: 180px;
+}
+/* Long flexible values: queue names + "+ New queue…" / "+ صف جدید…" +
+   " (running)" / " (در حال اجرا)". Takes remaining row space. */
+select.input.select-queue {
+  flex: 1 1 230px;
+  width: auto;
+  min-width: 210px;
+  margin-bottom: 0;
+}
+html[lang='fa'] select.input.select-queue {
+  flex-basis: 250px;
+  min-width: 230px;
+}
+/* Standalone dropdowns (e.g. Batch connections): keep off full modal width
+   so short options don't look oversized. */
+select.input.select-single {
+  width: auto;
+  min-width: 190px;
+  max-width: 260px;
+  margin-bottom: 0;
+}
+html[lang='fa'] select.input.select-single {
+  min-width: 180px;
+  max-width: 280px;
+}
+/* Rows holding dropdowns wrap on narrow modals instead of squeezing. */
+.row.select-row { flex-wrap: wrap; align-items: center; }
+/* Proxy custom row: type + port are short fixed values, host takes the rest. */
+.proxy-type-wrap { flex: 0 1 140px; min-width: 124px; }
+.proxy-host-wrap { flex: 1 1 220px; min-width: 180px; }
+.proxy-port-wrap { flex: 0 1 120px; min-width: 104px; }
+html[lang='fa'] .proxy-type-wrap { flex-basis: 130px; min-width: 116px; }
+.queue-select option { background: var(--surface-solid); color: var(--text); }
+.row { display: flex; gap: 10px; }
+/* New Download modal footer: Download + Cancel side-by-side, equal size */
+.modal-actions { margin-top: 10px; }
+.modal-actions .btn {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  min-height: 44px;
+  padding: 12px 16px;
+}
+.empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+.empty-big { font-size: 48px; margin-bottom: 12px; }
+.empty-title { font-weight: 700; color: var(--text); }
+.save-path-box { display: flex; gap: 8px; margin-bottom: 10px; }
+.save-path-box .input { margin-bottom: 0; }
+/* Folder-picker rows (New Download / Batch / Settings download folder):
+   input + icon button share one row height. The input's bottom margin lives
+   on the row (a margin on the stretched input would make the button taller),
+   and the button never shrinks when the path text is long. */
+.save-path-box, .dir-row { align-items: stretch; }
+.save-path-box .input, .dir-row .input { margin-bottom: 0; min-width: 0; }
+.dir-row { margin-bottom: 10px; }
+.save-path-box .btn, .dir-row .btn { flex-shrink: 0; }
+.nav-section.row-between { display: flex; align-items: center; justify-content: space-between; }
+.nav-add-btn {
+  border: 1px solid var(--glass-border);
+  background: var(--surface);
+  border-radius: 8px;
+  width: 22px; height: 22px;
+  cursor: pointer;
+  font-weight: 800;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0 1px 0;
+  transition: 0.15s;
+}
+.nav-add-btn:hover { background: var(--surface-solid); box-shadow: var(--lift-shadow); }
+.queue-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot-idle); flex-shrink: 0; }
+.queue-dot.running { background: var(--green); box-shadow: 0 0 8px rgba(22,163,74,0.7); animation: pulse 1.6s infinite; }
+[data-theme="dark"] .queue-dot.running { box-shadow: 0 0 8px rgba(74,222,128,0.8); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+.nav-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

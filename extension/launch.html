@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Opening Jetro…</title>
+<style>
+  body { margin: 0; padding: 40px 20px; font: 14px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; color: #16213a; background: #f6f8fb; }
+  .card { max-width: 520px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 24px 26px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
+  h1 { font-size: 17px; margin: 0 0 8px; display: flex; align-items: center; gap: 10px; }
+  h1 img { width: 26px; height: 26px; }
+  p { margin: 8px 0; color: #4a5a75; font-size: 13px; }
+  code { font-size: 12px; background: #f0f3f8; padding: 2px 6px; border-radius: 6px; word-break: break-all; }
+  .row { display: flex; gap: 8px; margin-top: 14px; }
+  button { flex: 1; padding: 9px 10px; border: 0; border-radius: 8px; font-size: 13px; cursor: pointer; }
+  #open { background: #1f6feb; color: #fff; }
+  #open:hover { background: #1a60cb; }
+  #close { background: #eef1f6; color: #16213a; }
+  .hint { font-size: 12px; color: #6b7a90; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1><img src="icons/icon48.png" alt="" /> Opening Jetro…</h1>
+    <p>Your browser asked for permission to open Jetro. Click <b>Open</b> in that dialog and tick <b>Always allow</b> so it stops asking.</p>
+    <p>Link: <code id="target"></code></p>
+    <div class="row">
+      <button id="open" type="button">Open Jetro</button>
+      <button id="close" type="button">Close this tab</button>
+    </div>
+    <p class="hint">Jetro opens its New Download window and resolves the link automatically. Missed the dialog? <b>Open Jetro</b> asks again. This tab closes itself in about a minute.</p>
+  </div>
+  <script src="launch.js"></script>
+</body>
+</html>

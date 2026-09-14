@@ -2,7 +2,8 @@ import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, Tray, nati
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { SegmentedDownload, probeUrl, guessFilename, type ProxyOptions } from './downloader';
+import * as dns from 'node:dns';
+import { SegmentedDownload, probeUrl, guessFilename, smoothSpeedBps, type ProxyOptions } from './downloader';
 import {
   applySessionProxy,
   buildCustomProxyUrl,
@@ -14,6 +15,7 @@ import {
 } from './proxy';
 import { execFile, spawn, type ChildProcess } from 'child_process';
 import { resolveYtDlp, getYtDlpVersion, updateYtDlp, bundledYtDlpPath, userYtDlpPath, ffmpegDir, envWithBinPath, getFfmpegVersion, getQuickjsVersion, resolveFfmpeg, resolveFfprobe, resolveQuickjs } from './binaries';
+
 
 interface Item {
   id: string;
@@ -130,6 +132,9 @@ let settings: {
   checkUpdatesOnStart: true,
   ...defaultNetworkSettings(),
 };
+// Factory defaults snapshot (taken before loadAll merges the saved file).
+// Used by app:reset-all to restore a fresh-install state.
+const DEFAULT_SETTINGS = JSON.parse(JSON.stringify(settings));
 
 function normalizeRetrySettings(s: any) {
   const enabled = (s as any)?.autoRetryEnabled !== false;
@@ -204,12 +209,27 @@ function loadAll() {
     } catch {}
     // Backfill retry + update-check defaults for old settings files.
     try { normalizeRetrySettings(settings); } catch {}
+    // The browser-extension integration was removed: drop any stale keys.
+    delete (settings as any).extensionEnabled;
+    delete (settings as any).extensionPort;
+    delete (settings as any).extensionToken;
+    delete (settings as any).lastExtensionSeenAt;
+    delete (settings as any).hideExtensionNudge;
     // Old yt-dlp rows predate estimates: their totals were single-file based,
     // so treat active ones as estimates until they complete and get real sizes.
     items = items.map((i: any) =>
       i?.via === 'ytdlp' && i?.status !== 'completed' && (i?.totalBytes || 0) > 0 && i?.totalBytesIsEstimate === undefined
         ? { ...i, totalBytesIsEstimate: true }
         : i,
+    );
+    // Relaunch after quit/crash: no live runners exist, so anything saved
+    // mid-transfer could never progress and would show a frozen speed
+    // forever. Park interrupted transfers as paused (bytes + attempts kept,
+    // so resume continues where it left off) and zero all stale live speeds.
+    items = items.map((i: any) =>
+      i?.status === 'downloading' || i?.status === 'merging'
+        ? { ...i, status: 'paused', speedBps: 0 }
+        : { ...i, speedBps: 0 },
     );
     // backfill proxy defaults for old settings files
     settings = { ...settings, ...normalizeNetworkSettings(settings) };
@@ -248,12 +268,59 @@ function saveAllDebounced() {
   }, 1000);
 }
 let lastBroadcast = 0;
+let lastTrayRefresh = 0;
+let lastTraySig = '';
+/**
+ * Signature of what the tray menu shows: integer % per active download +
+ * active set + quick-settings values. Rebuilding only when this changes
+ * gives per-percent updates (46% -> 47%) without rebuilding 10x/sec.
+ */
+function trayProgressSig(): string {
+  try {
+    const active = items.filter((i) => i.status === 'downloading' || i.status === 'merging');
+    const parts = active.map((it) => {
+      let pct = 0;
+      try {
+        const total = Number(it.totalBytes) || 0;
+        const done = Number(it.downloadedBytes) || 0;
+        pct = total > 0 ? Math.min(100, Math.max(0, (done / total) * 100)) : 0;
+      } catch {}
+      return `${it.id}:${Math.floor(pct)}:${it.status}`;
+    });
+    const speed = String((settings as any)?.speedLimitKBps ?? 0);
+    const retries = String((settings as any)?.maxRetries ?? 3);
+    const retryOn = (settings as any)?.autoRetryEnabled !== false ? '1' : '0';
+    return `${parts.join('|')}#${speed}#${retries}#${retryOn}`;
+  } catch {
+    return '';
+  }
+}
+/** Rebuild the tray menu when the integer % (or set/settings) changed. */
+function requestTrayRefresh(immediate = false) {
+  try {
+    const now = Date.now();
+    const sig = trayProgressSig();
+    const sigChanged = sig !== lastTraySig;
+    // Progress ticks with no integer-% change: skip the rebuild entirely.
+    if (!immediate && !sigChanged) return;
+    // Min gap between rebuilds so a fast burst (many files crossing % at
+    // once) can't rebuild the native menu dozens of times per second.
+    if (!immediate && now - lastTrayRefresh < 400) return;
+    lastTrayRefresh = now;
+    lastTraySig = sig;
+    refreshTrayMenu();
+  } catch {}
+}
 function broadcast(immediate = false) {
   const now = Date.now();
   // Coalesce 100ms progress ticks: at most 10 full-list sends/sec unless forced.
   // Disk persistence stays debounced at ~1s via saveAllDebounced below.
+  // NOTE: tray % must still advance on coalesced ticks, so check the tray
+  // signature BEFORE the early return — otherwise 9/10 ticks never reach it
+  // and the menu looks frozen until the next forced broadcast.
   if (!immediate && now - lastBroadcast < 100) {
     saveAllDebounced();
+    try { requestTrayRefresh(false); } catch {}
     return;
   }
   lastBroadcast = now;
@@ -262,6 +329,7 @@ function broadcast(immediate = false) {
     win?.webContents.send('queue:update', queues);
   } catch {}
   saveAllDebounced();
+  requestTrayRefresh(immediate);
   if (immediate) {
     try { maybeFireQueuePower(); } catch {}
   }
@@ -803,7 +871,11 @@ function createWindow() {
       win?.show();
       win?.focus();
     } catch {}
+    flushPendingExternalUrl();
   });
+  try {
+    win.webContents.on('did-finish-load', () => flushPendingExternalUrl());
+  } catch {}
   // X button: exit / minimize-to-tray per settings.closeAction.
   // 'ask' notifies the renderer, which shows a styled in-app dialog
   // (same .modal-overlay/.modal look as the other popups).
@@ -880,14 +952,150 @@ function showMainWindow() {
   } catch {}
 }
 
+// ---- Tray menu helpers (live downloads + quick settings) ----
+/** Speed-limit presets (KB/s, 0 = unlimited). Mirrors SPEED_LIMIT_VALUES in src/lib/options.ts. */
+const TRAY_SPEED_LIMITS = [0, 100, 256, 512, 1024, 2048, 5120, 10240];
+/** Max auto-retry choices (0–10). Mirrors normalizeRetrySettings clamping. */
+const TRAY_MAX_RETRIES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+function traySpeedLabel(kbps: number): string {
+  const v = Math.max(0, Math.round(Number(kbps) || 0));
+  if (!v) return 'Unlimited';
+  if (v >= 1024 && v % 1024 === 0) return `${v / 1024} MB/s`;
+  return `${v} KB/s`;
+}
+
+/** Keep tray rows readable: Electron menus don't wrap, so cap at ~64 chars. */
+function truncateTrayFilename(name: string, max = 64): string {
+  const s = String(name || 'download');
+  if (s.length <= max) return s;
+  if (max <= 4) return s.slice(0, max);
+  return s.slice(0, max - 3) + '...';
+}
+
+/** 0–100 progress of an item (same math as the card progress bar). */
+function trayItemPct(it: Item): number {
+  try {
+    const total = Number(it.totalBytes) || 0;
+    const done = Number(it.downloadedBytes) || 0;
+    if (!(total > 0)) return 0;
+    return Math.min(100, Math.max(0, (done / total) * 100));
+  } catch {
+    return 0;
+  }
+}
+
+/** Persist + live-apply a tray speed-limit change and keep the UI in sync. */
+function applyTraySpeedLimit(kbps: number) {
+  try {
+    const v = Math.max(0, Math.round(Number(kbps) || 0));
+    (settings as any).speedLimitKBps = v;
+    try { saveAllSync(); } catch {}
+    // Live-apply: running segmented downloads keep the snapshot they started
+    // with, so push the new value (same as settings:save).
+    try {
+      const limitBps = v * 1024;
+      runners.forEach((dl) => {
+        try { dl.setSpeedLimitBps(limitBps); } catch {}
+      });
+    } catch {}
+    try { win?.webContents.send('settings:changed', settings); } catch {}
+    refreshTrayMenu();
+  } catch {}
+}
+
+/** Persist a tray max-retries change and keep the UI in sync. */
+function applyTrayMaxRetries(n: number) {
+  try {
+    const v = Math.min(10, Math.max(0, Math.round(Number(n) || 0)));
+    (settings as any).maxRetries = Number.isFinite(v) ? v : 3;
+    // Picking a number implies the user wants retries: re-enable when > 0 so
+    // the choice takes effect even if the toggle was off.
+    if ((settings as any).maxRetries > 0 && (settings as any).autoRetryEnabled === false) {
+      (settings as any).autoRetryEnabled = true;
+    }
+    try { normalizeRetrySettings(settings); } catch {}
+    try { saveAllSync(); } catch {}
+    try { win?.webContents.send('settings:changed', settings); } catch {}
+    refreshTrayMenu();
+  } catch {}
+}
+
 function refreshTrayMenu() {
   if (!tray) return;
   try {
     const closeAction = normalizeCloseAction((settings as any).closeAction);
+    const speedRaw = Math.round(Number((settings as any).speedLimitKBps) || 0);
+    const speedKBps = Number.isFinite(speedRaw) ? Math.max(0, speedRaw) : 0;
+    const autoRetryEnabled = (settings as any).autoRetryEnabled !== false;
+    const retriesRaw = Math.round(Number((settings as any).maxRetries ?? 3));
+    const maxRetries = Number.isFinite(retriesRaw) ? Math.min(10, Math.max(0, retriesRaw)) : 3;
+
+    // Currently downloading files, one row each: "<progress percentage> <File name>".
+    // Integer % so the menu advances 46% -> 47% like the user expects.
+    const active = items.filter((i) => i.status === 'downloading' || i.status === 'merging');
+    const downloadItems: any[] =
+      active.length > 0
+        ? active.map((it) => {
+            const pct = trayItemPct(it);
+            const label = `${Math.floor(pct)}% ${truncateTrayFilename(it.filename)}`;
+            return {
+              label,
+              toolTip: String(it.filename || ''),
+              click: () => showMainWindow(),
+            };
+          })
+        : [{ label: 'No active downloads', enabled: false }];
+
+    // Speed limiter presets. A custom value (typed in Settings) gets its own
+    // checked row so the menu never shows nothing selected.
+    const speedValues = TRAY_SPEED_LIMITS.includes(speedKBps)
+      ? TRAY_SPEED_LIMITS
+      : [...TRAY_SPEED_LIMITS, speedKBps].sort((a, b) => a - b);
+    const speedSubmenu: any[] = speedValues.map((v) => ({
+      label: traySpeedLabel(v),
+      type: 'radio' as const,
+      checked: v === speedKBps,
+      click: () => applyTraySpeedLimit(v),
+    }));
+
+    const retrySubmenu: any[] = [
+      {
+        label: 'Retry failed downloads',
+        type: 'checkbox' as const,
+        checked: autoRetryEnabled,
+        click: () => {
+          (settings as any).autoRetryEnabled = !autoRetryEnabled;
+          try { normalizeRetrySettings(settings); } catch {}
+          try { saveAllSync(); } catch {}
+          try { win?.webContents.send('settings:changed', settings); } catch {}
+          refreshTrayMenu();
+        },
+      },
+      { type: 'separator' as const },
+      ...TRAY_MAX_RETRIES.map((n) => ({
+        label: n === 0 ? '0 (no retry)' : `${n}`,
+        type: 'radio' as const,
+        checked: n === maxRetries,
+        click: () => applyTrayMaxRetries(n),
+      })),
+    ];
+
     const menu = Menu.buildFromTemplate([
       {
         label: 'Show Jetro',
         click: () => showMainWindow(),
+      },
+      { type: 'separator' },
+      ...downloadItems,
+      { type: 'separator' },
+      {
+        label: `Speed limit (${traySpeedLabel(speedKBps)})`,
+        submenu: speedSubmenu,
+      },
+      {
+        label: `Max auto retries (${maxRetries})`,
+        submenu: retrySubmenu,
       },
       { type: 'separator' },
       {
@@ -934,7 +1142,24 @@ function refreshTrayMenu() {
         },
       },
     ]);
+    try {
+      if (active.length > 0) {
+        // Hover feedback updates live without opening the menu. Keep it short:
+        // "Jetro - 2 downloading (46%, 12%)".
+        const pcts = active.slice(0, 5).map((it) => `${Math.floor(trayItemPct(it))}%`);
+        const extra = active.length > 5 ? ` +${active.length - 5} more` : '';
+        tray.setToolTip(`Jetro - ${active.length} downloading (${pcts.join(', ')})${extra}`);
+      } else {
+        tray.setToolTip('Jetro');
+      }
+    } catch {}
     tray.setContextMenu(menu);
+    // Direct callers (tray clicks, settings:save) bypass requestTrayRefresh —
+    // keep the % signature in sync so the next progress tick diffs correctly.
+    try {
+      lastTraySig = trayProgressSig();
+      lastTrayRefresh = Date.now();
+    } catch {}
   } catch {}
 }
 
@@ -967,6 +1192,106 @@ function ensureTray(): boolean {
   }
 }
 
+// ---- Browser extension: jetro:// protocol handoff ----
+// Extension (extension/background.js) sends `jetro://add?url=<enc>&source=..`.
+// The OS launches Jetro with that URL (cold start via process.argv, warm via
+// second-instance argv, macOS via open-url). We focus the window and forward
+// to the renderer, which opens New Download pre-filled + auto-resolves
+// (direct probe or yt-dlp video probe).
+let pendingExternalUrl: { url: string; source: string } | null = null;
+
+function parseJetroProtocolUrl(raw: string): { url: string; source: string } | null {
+  try {
+    const s = String(raw || '').trim();
+    if (!/^jetro:\/\//i.test(s)) return null;
+    // URL requires //host; jetro://add?url=.. parses with hostname 'add'.
+    const u = new URL(s);
+    const target = String(u.searchParams.get('url') || '').trim();
+    const source = String(u.searchParams.get('source') || 'page').trim().slice(0, 32) || 'page';
+    if (!target || target.length > 2048 || /\s/.test(target)) return null;
+    let inner: URL;
+    try {
+      inner = new URL(target);
+    } catch {
+      return null;
+    }
+    if (inner.protocol !== 'http:' && inner.protocol !== 'https:') return null;
+    if (!inner.hostname || !isValidDownloadHost(inner.hostname)) return null;
+    return { url: target, source };
+  } catch {
+    return null;
+  }
+}
+
+function extractJetroUrlFromArgv(argv: string[]): string | null {
+  try {
+    for (const a of argv || []) {
+      const s = String(a || '').trim().replace(/^"+|"+$/g, '');
+      if (/^jetro:\/\//i.test(s)) return s;
+    }
+  } catch {}
+  return null;
+}
+
+function deliverExternalUrl(url: string, source: string) {
+  const cleanUrl = String(url || '').trim();
+  if (!cleanUrl) return;
+  showMainWindow();
+  const payload = { url: cleanUrl, source: String(source || 'page') };
+  try {
+    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isLoading()) {
+      win.webContents.send('external-url', payload);
+      return;
+    }
+  } catch {}
+  // Window not ready yet (cold start) — flush on ready-to-show / did-finish-load.
+  pendingExternalUrl = payload;
+  // Retry shortly in case the window becomes ready without re-firing flush.
+  try {
+    setTimeout(() => flushPendingExternalUrl(), 1500);
+  } catch {}
+}
+
+function flushPendingExternalUrl() {
+  if (!pendingExternalUrl) return;
+  try {
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send('external-url', pendingExternalUrl);
+    pendingExternalUrl = null;
+  } catch {}
+}
+
+function handleJetroProtocolArg(raw: string | null | undefined) {
+  if (!raw) return;
+  const parsed = parseJetroProtocolUrl(String(raw));
+  if (parsed) deliverExternalUrl(parsed.url, parsed.source);
+}
+
+function registerJetroProtocol() {
+  try {
+    if (process.defaultApp) {
+      // Dev (`electron dist-electron/main.js`): register with explicit script path.
+      if (process.argv.length >= 2) {
+        try {
+          app.setAsDefaultProtocolClient('jetro', process.execPath, [path.resolve(process.argv[1])]);
+          return;
+        } catch {}
+      }
+    }
+    app.setAsDefaultProtocolClient('jetro');
+  } catch (e) {
+    console.warn('[jetro] protocol registration failed', e);
+  }
+}
+
+// macOS: protocol link while running.
+try {
+  app.on('open-url', (e: any, url: string) => {
+    try { e?.preventDefault?.(); } catch {}
+    handleJetroProtocolArg(url);
+  });
+} catch {}
+
 app.whenReady().then(() => {
   // Single instance: a second launch focuses the running app.
   try {
@@ -975,8 +1300,17 @@ app.whenReady().then(() => {
       app.quit();
       return;
     }
-    app.on('second-instance', () => showMainWindow());
+    app.on('second-instance', (_e: any, argv?: string[]) => {
+      try {
+        const proto = extractJetroUrlFromArgv(argv || []);
+        if (proto) handleJetroProtocolArg(proto);
+        else showMainWindow();
+      } catch {
+        showMainWindow();
+      }
+    });
   } catch {}
+  registerJetroProtocol();
   if (process.platform === 'win32') {
     try {
       app.setAppUserModelId('com.jetrodl.app');
@@ -987,6 +1321,14 @@ app.whenReady().then(() => {
   // fix downloadDir default if missing
   try {
     fs.mkdirSync(settings.downloadDir, { recursive: true });
+  } catch {}
+  // Cold start via jetro:// link (Windows passes it in process.argv).
+  try {
+    const cold = extractJetroUrlFromArgv(process.argv || []);
+    if (cold) {
+      const parsed = parseJetroProtocolUrl(cold);
+      if (parsed) pendingExternalUrl = { url: parsed.url, source: parsed.source };
+    }
   } catch {}
   createWindow();
   ensureTray();
@@ -1039,13 +1381,9 @@ app.on('before-quit', () => {
 });
 
 // ---- IPC ----
-ipcMain.handle('dl:probe', async (_e, url: string) => {
-  url = normalizeDownloadUrl(url);
-  return probeUrl(url, currentProxyOpts());
-});
-
-ipcMain.handle('dl:add', async (_e, url: string, opts?: any) => {
-  url = normalizeDownloadUrl(url);
+// Shared single-download add path. Normalizes + probes + queues.
+async function addSingleDownload(rawUrl: string, opts?: any): Promise<Item> {
+  const url = normalizeDownloadUrl(rawUrl);
   let filename = opts?.filename;
   let total = 0;
   let supportsRange = false;
@@ -1121,6 +1459,15 @@ ipcMain.handle('dl:add', async (_e, url: string, opts?: any) => {
   broadcast(true);
   pumpQueue();
   return item;
+}
+
+ipcMain.handle('dl:probe', async (_e, url: string) => {
+  url = normalizeDownloadUrl(url);
+  return probeUrl(url, currentProxyOpts());
+});
+
+ipcMain.handle('dl:add', async (_e, url: string, opts?: any) => {
+  return addSingleDownload(url, opts);
 });
 
 // ---- Batch downloads (New Batch Download: one *-pattern → many files) ----
@@ -1377,6 +1724,88 @@ ipcMain.handle('dl:remove', async (_e, id: string, deleteFile?: boolean) => {
   broadcast(true);
 });
 ipcMain.handle('dl:list', () => items);
+// Live per-connection progress + server info for the analytics view.
+// Live runner → current segments; paused/queued → resume file next to the
+// download; anything else (yt-dlp, never started) → segments: null.
+const hostIpCache = new Map<string, string | null>();
+async function resolveHostIp(host: string): Promise<string | null> {
+  if (!host) return null;
+  if (hostIpCache.has(host)) return hostIpCache.get(host)!;
+  try {
+    const r = await dns.promises.lookup(host);
+    hostIpCache.set(host, r.address || null);
+    return r.address || null;
+  } catch {
+    hostIpCache.set(host, null);
+    return null;
+  }
+}
+// Server geolocation, resolved exactly once per IP via a free no-key API and
+// cached (including failures, so offline hosts never trigger repeat calls).
+// Returns a { label, countryCode } pair or null when unavailable.
+const hostGeoCache = new Map<string, { label: string; countryCode: string | null } | null>();
+async function resolveHostGeo(ip: string | null): Promise<{ label: string; countryCode: string | null } | null> {
+  if (!ip) return null;
+  if (hostGeoCache.has(ip)) return hostGeoCache.get(ip)!;
+  let geo: { label: string; countryCode: string | null } | null = null;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 6000);
+    try {
+      const res = await fetch(`https://ipwho.is/${encodeURIComponent(ip)}`, { signal: ctrl.signal });
+      const j: any = await res.json();
+      if (j && j.success !== false && (j.city || j.country)) {
+        const code = typeof j.country_code === 'string' && /^[a-z]{2}$/i.test(j.country_code)
+          ? j.country_code.toUpperCase()
+          : null;
+        geo = {
+          label: [j.country, j.city].filter(Boolean).join(', ') || 'Unknown location',
+          countryCode: code,
+        };
+      }
+    } finally {
+      clearTimeout(t);
+    }
+  } catch {
+    geo = null;
+  }
+  hostGeoCache.set(ip, geo);
+  return geo;
+}
+ipcMain.handle('dl:segments', async (_e, id: string) => {
+  const it = items.find((i) => i.id === id);
+  if (!it) return null;
+  let host = '';
+  try { host = new URL(it.url).hostname; } catch {}
+  let segments: { index: number; start: number; end: number; downloaded: number }[] | null = null;
+  let live = false;
+  const r = runners.get(id);
+  if (r) {
+    live = true;
+    if (r.segments.length) {
+      segments = r.segments.map((s) => ({ index: s.index, start: s.start, end: s.end, downloaded: s.downloaded }));
+    } else {
+      // Single-stream transfer: synthesize one segment from the item counters.
+      const total = it.totalBytes || it.downloadedBytes || 0;
+      segments = [{ index: 0, start: 0, end: Math.max(0, total - 1), downloaded: it.downloadedBytes || 0 }];
+    }
+  } else {
+    try {
+      const raw = fs.readFileSync(it.savePath + '.jetro.json', 'utf8');
+      const s = JSON.parse(raw);
+      if (s && s.url === it.url && Array.isArray(s.segments) && s.segments.length) {
+        segments = s.segments.map((sg: any) => ({
+          index: Number(sg.index) || 0,
+          start: Number(sg.start) || 0,
+          end: Number(sg.end) || 0,
+          downloaded: Number(sg.downloaded) || 0,
+        }));
+      }
+    } catch {}
+  }
+  const ip = host ? await resolveHostIp(host) : null;
+  return { host, ip, geo: await resolveHostGeo(ip), segments, live };
+});
 ipcMain.handle('dl:move', async (_e, id: string, queueId?: string | null) => {
   const it = items.find((i) => i.id === id);
   if (!it) return null;
@@ -1640,6 +2069,12 @@ ipcMain.handle('settings:save', async (_e, s: any) => {
   try { normalizeRetrySettings(settings); } catch {}
   // drop removed VPN option (old clients / old settings files may still send it)
   delete (settings as any).vpnKillSwitch;
+  // the browser-extension integration was removed: drop any stale keys
+  delete (settings as any).extensionEnabled;
+  delete (settings as any).extensionPort;
+  delete (settings as any).extensionToken;
+  delete (settings as any).lastExtensionSeenAt;
+  delete (settings as any).hideExtensionNudge;
   // the run-at-startup feature was removed: ignore any stale flag from old clients
   delete (settings as any).launchAtStartup;
   // the global scheduler was removed: per-queue schedules only
@@ -1655,10 +2090,64 @@ ipcMain.handle('settings:save', async (_e, s: any) => {
   try { settings.downloadDir = normalizeDir(settings.downloadDir) || settings.downloadDir; } catch {}
   applyNativeTheme();
   refreshTrayMenu();
+  // Live-apply the speed limit: running segmented downloads keep the snapshot
+  // they started with, so push the new value — otherwise changing the limit
+  // mid-download looks like it "doesn't work".
+  try {
+    const limitBps = Math.max(0, Math.round(Number((settings as any).speedLimitKBps || 0))) * 1024;
+    runners.forEach((dl) => {
+      try { dl.setSpeedLimitBps(limitBps); } catch {}
+    });
+  } catch {}
   broadcast(true);
   pumpQueue();
   await refreshNetworkRouting();
   return settings;
+});
+// Full reset: stop everything, wipe downloads / queues / settings back to
+// factory defaults and persist. Downloaded files on disk are kept — only the
+// app state (list entries, resume sidecars, settings) is cleared. The
+// renderer clears its own localStorage and reloads afterwards.
+ipcMain.handle('app:reset-all', async () => {
+  try {
+    for (const id of [...ytJobs.keys()]) {
+      try { killYtJob(id); } catch {}
+    }
+  } catch {}
+  try {
+    for (const t of [...retryTimers.values()]) {
+      try { clearTimeout(t); } catch {}
+    }
+    retryTimers.clear();
+  } catch {}
+  try {
+    for (const dl of [...runners.values()]) {
+      try { dl.pause(); } catch {}
+    }
+    runners.clear();
+  } catch {}
+  // Drop resume sidecars so reset entries can never be half-resurrected.
+  // The real files stay untouched on disk.
+  for (const it of items) {
+    try {
+      if (it?.savePath) fs.unlinkSync(it.savePath + '.jetro.json');
+    } catch {}
+  }
+  items = [];
+  queues = [];
+  try {
+    settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  } catch {}
+  try {
+    fs.unlinkSync(path.join(storeDir, 'jetro-cookies.txt'));
+  } catch {}
+  try {
+    fs.mkdirSync(settings.downloadDir, { recursive: true });
+  } catch {}
+  try { applyNativeTheme(); } catch {}
+  try { saveAllSync(); } catch {}
+  broadcast(true);
+  return { ok: true };
 });
 
 ipcMain.handle('dialog:folder', async (_e, defaultPath?: string) => {
@@ -1695,8 +2184,39 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+function getAppVersion(): string {
+  const FALLBACK = '1.0.0';
+  try {
+    const electronVer = String((process.versions as any)?.electron || '').trim();
+    // package.json is authoritative — app.getVersion() returns the Electron
+    // version (e.g. 33.4.11) when running dev as `electron dist-electron/main.js`
+    // because the app path has no package.json.
+    const candidates: string[] = [];
+    try { candidates.push(path.join(app.getAppPath(), 'package.json')); } catch {}
+    candidates.push(path.join(__dirname, '..', 'package.json'));
+    candidates.push(path.join(__dirname, 'package.json'));
+    candidates.push(path.join(process.cwd(), 'package.json'));
+    for (const p of candidates) {
+      try {
+        if (p && fs.existsSync(p)) {
+          const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+          const v = String(j?.version || '').trim();
+          if (v && v !== electronVer) return v;
+        }
+      } catch {}
+    }
+    const viaApp = String(app.getVersion?.() || '').trim();
+    if (viaApp && viaApp !== electronVer) return viaApp;
+    return FALLBACK;
+  } catch {
+    return FALLBACK;
+  }
+}
+
+ipcMain.handle('app:get-version', async () => getAppVersion());
+
 ipcMain.handle('app:check-update', async () => {
-  const current = String(app.getVersion() || '').trim() || '0.2.0';
+  const current = getAppVersion();
   const releasesUrl = 'https://github.com/Erkalin/Jetro/releases';
   try {
     const ctrl = new AbortController();
@@ -2019,17 +2539,15 @@ function ytDlpJsRuntimeArgs(): string[] {
 }
 
 /**
- * YouTube player-client fallback. Since 2024 the `web` client requires a
- * proof-of-origin token yt-dlp can't manufacture, so identifying as `web`
- * without one yields "Sign in to confirm you're not a bot" even with valid
- * cookies. `tv` is the least-scrutinised client for anonymous videos, but it
- * authenticates differently — never pair it with cookies (the mismatch
- * invalidates the session). With cookies use `web_safari` first.
+ * YouTube player-client fallback. `web_safari` + `web_embedded` avoid the
+ * `web` client's proof-of-origin bot-check while still authenticating like a
+ * normal browser session (safe with cookies, unlike `tv`). `-tv_downgraded`
+ * opts out of the downgraded-TV fallback formats.
  */
-function ytDlpYoutubeClientArgs(pageUrl: string, usedCookies: boolean): string[] {
+function ytDlpYoutubeClientArgs(pageUrl: string, _usedCookies?: boolean): string[] {
   if (!/youtube\.com|youtu\.be/i.test(String(pageUrl || ''))) return [];
-  if (usedCookies) return ['--extractor-args', 'youtube:player_client=web_safari,web'];
-  return ['--extractor-args', 'youtube:player_client=tv,web_safari,web'];
+  void _usedCookies;
+  return ['--extractor-args', 'youtube:player_client=web_safari,web_embedded,-tv_downgraded'];
 }
 
 /** `--proxy` for yt-dlp so it routes exactly like the rest of the app. */
@@ -2334,9 +2852,10 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
   if (/enotfound|eai_again|ehostunreach|enetunreach|enetdown|enotconn|network is unreachable|temporary failure in name resolution|failed to resolve|connection aborted|connection reset|timed out|timeout|socket hang up|offline|err_internet|dns/i.test(probeFailure)) {
     return {
       formats: [],
-      hint: detail || 'Could not reach the video page — check your internet connection, firewall/proxy allowances for yt-dlp, and click Detect again.',
+      hint: detail || 'Could not reach the video page — check your internet connection and proxy settings (use System proxy or a proper Custom proxy), then click Detect again.',
       detail: '',
       needsCookies: false,
+      proxyHint: true,
     };
   }
   if (/unsupported url|no video formats found|no formats found|video unavailable/i.test(probeFailure)) {
@@ -2349,9 +2868,10 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
   }
   return {
     formats: [],
-    hint: detail || 'No video/audio formats found. Check your internet connection, or the link needs login.',
+    hint: detail || 'No video/audio formats found. Check your internet connection and proxy settings (System proxy or a proper Custom proxy) — or the link may need login.',
     detail: '',
     needsCookies: false,
+    proxyHint: true,
   };
 });
 
@@ -2392,6 +2912,14 @@ async function startYtDownload(item: Item) {
     ...ck.args,
     ...proxyArgs,
   ];
+  // Segmented downloads are throttled by the global token bucket; yt-dlp
+  // manages its own connections, so enforce the same global limit natively.
+  // (Applies to newly started video/audio downloads — a running yt-dlp
+  // process reads the rate once at spawn.)
+  try {
+    const limitKBps = Math.max(0, Math.round(Number((settings as any).speedLimitKBps || 0)));
+    if (limitKBps > 0) args.push('--limit-rate', `${limitKBps}K`);
+  } catch {}
   if ((item as any).subtitles) {
     args.push('--write-subs', '--sub-langs', 'en.*', '--embed-subs');
   }
@@ -2437,6 +2965,7 @@ async function startYtDownload(item: Item) {
   let progBase = 0;
   let progCurTotal = 0;
   let progHasOutput = false;
+  let lastProgAt = 0;
   let outBuf = '';
   let lastErrLines: string[] = [];
   const floorTotal = Math.max(0, Math.round(Number(item.totalBytes || 0)));
@@ -2460,7 +2989,9 @@ async function startYtDownload(item: Item) {
     if (/\[merger\]|\[extractaudio\]|\[videoconvertor\]|merging formats into/i.test(line)) {
       if (item.status === 'downloading') {
         item.status = 'merging';
-        item.speedBps = 0;
+        // Ramp down instead of snapping to zero — the poll timer below keeps
+        // decaying toward 0 while ffmpeg merges.
+        item.speedBps = smoothSpeedBps(item.speedBps, 0);
         broadcast();
       }
       return;
@@ -2484,6 +3015,7 @@ async function startYtDownload(item: Item) {
     const m = /\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+(~\s*)?([\d.]+)\s*([KMGT]?i?B)/i.exec(line);
     if (m) {
       progHasOutput = true;
+      lastProgAt = Date.now();
       const pct = Math.min(100, Math.max(0, Number(m[1])));
       const isApprox = !!m[2];
       const total = parseSize(m[3], m[4]);
@@ -2502,7 +3034,7 @@ async function startYtDownload(item: Item) {
       const sm = /at\s+([\d.]+)\s*([KMGT]?i?B)\/s/i.exec(line);
       if (sm) {
         const sp = parseSpeed(sm[1], sm[2]);
-        if (sp > 0) item.speedBps = sp;
+        if (sp > 0) item.speedBps = smoothSpeedBps(item.speedBps, sp);
       }
       if (item.status === 'downloading' || item.status === 'merging') broadcast();
       return;
@@ -2540,6 +3072,18 @@ async function startYtDownload(item: Item) {
         const st = fs.statSync(item.savePath);
         lastBytes = st.size;
       } catch {}
+      // yt-dlp went quiet (stall gap, file switch, merge): decay gradually
+      // instead of freezing the last speed or snapping to zero.
+      try {
+        if (Date.now() - lastProgAt > 400 && (item.speedBps || 0) > 0) {
+          const decayed = smoothSpeedBps(item.speedBps, 0);
+          if (decayed !== item.speedBps) {
+            item.speedBps = decayed;
+            broadcast();
+            return;
+          }
+        }
+      } catch {}
       broadcast();
       return;
     }
@@ -2547,7 +3091,7 @@ async function startYtDownload(item: Item) {
       const st = fs.statSync(item.savePath);
       const now = Date.now();
       const dt = Math.max(0.05, (now - lastTick) / 1000);
-      item.speedBps = Math.round(Math.max(0, st.size - lastBytes) / dt);
+      item.speedBps = smoothSpeedBps(item.speedBps, Math.max(0, st.size - lastBytes) / dt);
       lastBytes = st.size;
       lastTick = now;
       item.downloadedBytes = st.size;
@@ -2630,7 +3174,11 @@ async function startYtDownload(item: Item) {
   });
 }
 
-ipcMain.handle('video:download', async (_e, opts?: any) => {
+/**
+ * Shared video/audio (yt-dlp) add path. Derives a default filename when the
+ * caller only has a page URL.
+ */
+async function addVideoDownload(opts?: any): Promise<Item> {
   const pageUrl = String(opts?.pageUrl || '').trim();
   if (!pageUrl) throw new Error('Missing video URL');
   const kind = String(opts?.kind || (opts?.audioOnly ? 'audio' : '') || '').toLowerCase() === 'audio' ? 'audio' : 'video';
@@ -2693,6 +3241,10 @@ ipcMain.handle('video:download', async (_e, opts?: any) => {
   resetQueuePower(validQueueId);
   await startYtDownload(item);
   return item;
+}
+
+ipcMain.handle('video:download', async (_e, opts?: any) => {
+  return addVideoDownload(opts);
 });
 
 ipcMain.handle('binaries:status', async () => {

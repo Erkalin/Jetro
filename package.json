@@ -1,7 +1,7 @@
 {
   "name": "jetro",
-  "version": "0.2.0",
-  "description": "Jetro - modern fancy download manager",
+  "version": "1.0.0",
+  "description": "Jetro",
   "author": "Erkalin",
   "license": "MIT",
   "repository": {
@@ -52,6 +52,12 @@
       {
         "from": "bin/quickjs.exe",
         "to": "bin/quickjs.exe"
+      }
+    ],
+    "protocols": [
+      {
+        "name": "Jetro",
+        "schemes": ["jetro"]
       }
     ],
     "win": {

@@ -1,0 +1,92 @@
+/* RTL overrides — applied when <html dir="rtl"> (Persian).
+   Flex/grid auto-flip with direction; these fix physical left/right rules. */
+[dir='rtl'] .ctx-menu,
+[dir='rtl'] .dropdown-menu {
+  text-align: right;
+}
+
+[dir='rtl'] .toolbar-dropdown .dropdown-menu {
+  left: auto;
+  right: 0;
+}
+
+[dir='rtl'] .nav-count {
+  margin-left: 0;
+  margin-right: auto;
+}
+
+[dir='rtl'] .analytics-pct {
+  margin-left: 0;
+  margin-right: auto;
+  text-align: left;
+}
+
+[dir='rtl'] .analytics-pct-sign {
+  margin-left: 0;
+  margin-right: 2px;
+}
+
+[dir='rtl'] .details-resizer {
+  right: auto;
+  left: 0;
+  margin-right: 0;
+  margin-left: -5px;
+}
+
+[dir='rtl'] .details-actions {
+  padding-right: 0;
+  padding-left: 8px;
+}
+
+[dir='rtl'] .complete-close {
+  right: auto;
+  left: 12px;
+}
+
+/* Directory picker rows: swap folder button and text box in Persian
+   (button goes right, text box left — un-flipped from RTL). */
+[dir='rtl'] .dir-row,
+[dir='rtl'] .save-path-box {
+  flex-direction: row-reverse;
+}
+
+[dir='rtl'] .complete-file,
+[dir='rtl'] .modal,
+[dir='rtl'] .ctx-menu-item {
+  text-align: right;
+}
+
+/* Download-complete dialog stays centered like in English. */
+[dir='rtl'] .complete-modal {
+  text-align: center;
+}
+
+/* URLs, file paths and code stay LTR even in Persian. */
+[dir='rtl'] .card-url,
+[dir='rtl'] .batch-row-url,
+[dir='rtl'] .analytics-url,
+[dir='rtl'] .complete-file-path,
+[dir='rtl'] code {
+  direction: ltr;
+  unicode-bidi: embed;
+  text-align: left;
+}
+
+/* Measurements stay LTR even in Persian — otherwise "201 KB/s"
+   reorders to "KB/s 201". Alignment is preserved where it matters. */
+[dir='rtl'] .analytics-tile-value,
+[dir='rtl'] .analytics-progress-meta span,
+[dir='rtl'] .analytics-conn-bytes,
+[dir='rtl'] .analytics-conns-foot,
+[dir='rtl'] .sg-label,
+[dir='rtl'] .sg-tip-main,
+[dir='rtl'] .sg-tip-sub {
+  direction: ltr;
+  unicode-bidi: embed;
+}
+[dir='rtl'] .details-td.details-num {
+  direction: ltr;
+  unicode-bidi: embed;
+  justify-content: flex-end;
+  text-align: right;
+}
