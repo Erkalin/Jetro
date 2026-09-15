@@ -781,6 +781,10 @@ export default function App() {
       setFilenameError(t.filenameError.badChars);
       return null;
     }
+    if (/%/.test(name)) {
+      setFilenameError(t.filenameError.badChars);
+      return null;
+    }
     if (/[. ]$/.test(name)) {
       setFilenameError(t.filenameError.trailing);
       return null;
@@ -1833,10 +1837,17 @@ export default function App() {
   const saveSettingsAndClose = async () => {
     if (draftSettings) {
       const clean = stripGlobalScheduler({ ...draftSettings, theme: normalizeTheme(draftSettings.theme) });
-      await window.jetro?.saveSettings(clean);
-      setSettings(clean);
-      setThemeChoice(clean.theme);
-      try { localStorage.setItem(THEME_KEY, clean.theme); } catch {}
+      try {
+        const saved = await window.jetro?.saveSettings(clean);
+        // Backend normalizes (ports, dirs, retry clamps) — keep its result.
+        const next = saved ? stripGlobalScheduler(saved) : clean;
+        setSettings(next);
+        setThemeChoice(normalizeTheme((next as any)?.theme ?? clean.theme));
+        try { localStorage.setItem(THEME_KEY, normalizeTheme((next as any)?.theme ?? clean.theme)); } catch {}
+      } catch (e: any) {
+        alert(e?.message || 'Could not save settings.');
+        return;
+      }
     }
     setShowDiscardConfirm(false);
     setShowSettings(false);
