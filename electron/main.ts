@@ -483,10 +483,10 @@ function normalizeDownloadUrl(raw: string): string {
   return candidate;
 }
 function activeCount() {
-  return items.filter((i) => i.status === 'downloading').length;
+  return items.filter((i) => i.status === 'downloading' || i.status === 'merging').length;
 }
 function activeCountForQueue(queueId: string | null) {
-  return items.filter((i) => (i.queueId || null) === (queueId || null) && i.status === 'downloading').length;
+  return items.filter((i) => (i.queueId || null) === (queueId || null) && (i.status === 'downloading' || i.status === 'merging')).length;
 }
 
 /** Non-retryable failures: user pause, validation, or unwritable location. */
@@ -529,11 +529,9 @@ function scheduleAutoRetry(item: Item): boolean {
         if (item.status === 'queued') {
           item.nextRetryAt = null;
           broadcast(true);
-          if (item.via === 'ytdlp') {
-            startYtDownload(item).catch(() => {});
-          } else {
-            pumpQueue();
-          }
+          // Both engines go through the queue pump so stopped queues,
+          // schedule windows and concurrency limits are respected.
+          pumpQueue();
         }
       } catch {}
     }, delayMs + 50);
@@ -600,7 +598,7 @@ function batchLimit(): number {
   return Math.min(10, Math.max(1, Math.round(n) || 3));
 }
 function activeCountForBatch(batchId: string): number {
-  return items.filter((i) => (i.batchId || null) === batchId && i.status === 'downloading').length;
+  return items.filter((i) => (i.batchId || null) === batchId && (i.status === 'downloading' || i.status === 'merging')).length;
 }
 /** Queued items of one batch in From→To order (batchIndex asc, then createdAt). */
 function queuedOfBatch(batchId: string): Item[] {
@@ -675,6 +673,18 @@ function enforceQueueSchedules(): boolean {
   return parked;
 }
 
+/** Route a queued item to the right engine. Segmented URLs must never go to
+ * yt-dlp and page URLs must never go to the segmented engine. */
+async function startQueuedItem(item: Item): Promise<void> {
+  if (!item || item.status !== 'queued') return;
+  if ((item as any)?.via === 'ytdlp') {
+    if (ytJobs.has(item.id)) return;
+    if (item.nextRetryAt && Number(item.nextRetryAt) > Date.now()) return;
+    await startYtDownload(item).catch(() => {});
+  } else {
+    await startDownload(item).catch(() => {});
+  }
+}
 async function pumpQueue() {
   // Park anything running outside its queue's schedule window first, so closing
   // windows actually stop downloads (and re-opening windows resume them).
@@ -691,7 +701,7 @@ async function pumpQueue() {
     const queuedSingles = items.filter((i) => i.status === 'queued' && !(i.queueId || null) && !(i.batchId || null) && retryReady(i));
     while (activeCount() < settings.maxConcurrentDownloads && queuedSingles.length) {
       const next = queuedSingles.shift()!;
-      startDownload(next).catch(() => {});
+      startQueuedItem(next).catch(() => {});
       await new Promise((r) => setTimeout(r, 200));
     }
     const batchIds = [...new Set(items.filter((i) => i.status === 'queued' && !(i.queueId || null) && (i.batchId || null)).map((i) => String(i.batchId)))];
@@ -711,7 +721,7 @@ async function pumpQueue() {
         const next = queued.shift()!;
         // Re-check: the item may have been paused/removed while we waited.
         if (next.status !== 'queued') continue;
-        startDownload(next).catch(() => {});
+        startQueuedItem(next).catch(() => {});
         await new Promise((r) => setTimeout(r, 200));
       }
     }
@@ -732,7 +742,7 @@ async function pumpQueue() {
     ) {
       const next = queued.shift()!;
       if (next.status !== 'queued') continue;
-      startDownload(next).catch(() => {});
+      startQueuedItem(next).catch(() => {});
       await new Promise((r) => setTimeout(r, 200));
     }
   }
@@ -1428,8 +1438,8 @@ async function addSingleDownload(rawUrl: string, opts?: any): Promise<Item> {
   assertDirWritable(dir);
   if (opts?.replace) {
     // User chose "Replace": drop any previous file + resume state first.
-    try { fs.unlinkSync(savePath); } catch {}
-    try { fs.unlinkSync(savePath + '.jetro.json'); } catch {}
+    await unlinkWithRetries(savePath, 3);
+    await unlinkWithRetries(savePath + '.jetro.json', 3);
   }
   const validQueueId =
     opts?.queueId && queues.some((q) => q.id === opts.queueId) ? String(opts.queueId) : null;
@@ -1611,7 +1621,18 @@ ipcMain.handle('batch:add', async (_e, urls?: string[], opts?: any) => {
     }));
     // Dedup filenames inside the batch (e.g. pattern only in query string):
     // file.zip, file (1).zip, file (2).zip …
+    // Also avoid clobbering existing list entries or files already on disk.
     const used = new Set<string>();
+    for (const it of items) {
+      try {
+        if (it?.savePath && path.dirname(it.savePath) === dir) {
+          used.add(path.basename(it.savePath).toLowerCase());
+        }
+      } catch {}
+    }
+    try {
+      for (const n of fs.readdirSync(dir)) used.add(String(n).toLowerCase());
+    } catch {}
     results.forEach((r, idx) => {
       let name = r.filename;
       if (used.has(name.toLowerCase())) {
@@ -1687,7 +1708,12 @@ ipcMain.handle('dl:resume', async (_e, id: string) => {
   resetQueuePower(it.queueId || null);
   if (it.via === 'ytdlp') {
     if ((it.status === 'downloading' || it.status === 'merging') && ytJobs.has(id)) return;
-    startYtDownload(it).catch(() => {}); // yt-dlp auto-resumes its partial file
+    // Queue it so stopped queues, schedule windows and concurrency limits apply.
+    it.status = 'queued';
+    it.error = undefined;
+    touchTry(it);
+    broadcast(true);
+    pumpQueue();
     return;
   }
   // Drop any stale runner left behind by a previous run (e.g. pause raced a
@@ -1707,19 +1733,90 @@ ipcMain.handle('dl:resume', async (_e, id: string) => {
   broadcast(true);
   pumpQueue();
 });
+/** Best-effort unlink that survives Windows file locks (open handle still closing). */
+async function unlinkWithRetries(target: string, attempts = 6): Promise<void> {
+  const p = String(target || '');
+  if (!p) return;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      try {
+        const st = fs.statSync(p);
+        if (st.isDirectory()) return;
+      } catch {
+        // ENOENT = already gone.
+        return;
+      }
+      fs.unlinkSync(p);
+      return;
+    } catch (e: any) {
+      const code = String((e as any)?.code || '');
+      if (code === 'ENOENT' || /ENOENT/i.test(String(e?.message || ''))) return;
+      if (i === attempts - 1) return;
+      await new Promise((r) => setTimeout(r, 120 * (i + 1)));
+    }
+  }
+}
+
+/** Remove yt-dlp side-products next to the final file (split-stream fragments, subs). */
+async function cleanupYtDlpTemps(savePath: string): Promise<void> {
+  try {
+    const dir = path.dirname(savePath);
+    const base = path.basename(savePath);
+    const dot = base.lastIndexOf('.');
+    const stem = dot > 0 ? base.slice(0, dot) : base;
+    // Known single-file sidecars.
+    for (const suffix of ['.part', '.ytdl', '.temp', '.tmp']) {
+      try { await unlinkWithRetries(savePath + suffix, 2); } catch {}
+    }
+    // Fragment / subtitle siblings: "<stem>.f*.*", "<stem>.*.vtt/srt/ass/...".
+    let entries: string[] = [];
+    try { entries = fs.readdirSync(dir); } catch { return; }
+    const subExt = /\.(vtt|srt|ass|ssa|lrc|ttml|sbv)(\.part)?$/i;
+    for (const name of entries) {
+      if (name === base) continue;
+      if (!name.startsWith(stem + '.')) continue;
+      const rest = name.slice(stem.length + 1);
+      const isFragment = /^f\d+/i.test(rest) || /\.f\d+/i.test(name) || /\.temp\./i.test(name);
+      const isSub = subExt.test(name);
+      if (isFragment || isSub) {
+        try { await unlinkWithRetries(path.join(dir, name), 2); } catch {}
+      }
+    }
+  } catch {}
+}
 ipcMain.handle('dl:remove', async (_e, id: string, deleteFile?: boolean) => {
   killYtJob(id);
   clearRetryTimer(id);
   const r = runners.get(id);
-  if (r) r.pause();
+  if (r) {
+    try { r.pause(); } catch {}
+  }
   runners.delete(id);
   const idx = items.findIndex((i) => i.id === id);
   if (idx >= 0) {
     const [rm] = items.splice(idx, 1);
-    if (deleteFile) {
-      try { fs.unlinkSync(rm.savePath); } catch {}
-      try { fs.unlinkSync(rm.savePath + '.jetro.json'); } catch {}
+    // Unfinished downloads only leave a partial file + resume sidecar behind —
+    // both are useless without the list entry, so always clean them even when
+    // the UI only asked to "remove from list". Completed downloads keep the
+    // real file unless the user explicitly chose "Delete file".
+    const isCompleted = rm.status === 'completed';
+    const shouldDeleteMain = !!deleteFile || !isCompleted;
+    if (rm.savePath) {
+      if (shouldDeleteMain) {
+        await unlinkWithRetries(rm.savePath);
+        if (rm.via === 'ytdlp') {
+          try { await cleanupYtDlpTemps(rm.savePath); } catch {}
+        }
+      }
+      // Resume sidecar is never user data — always drop it so a removed
+      // download can never be half-resurrected and never wastes space.
+      try { await unlinkWithRetries(rm.savePath + '.jetro.json', 3); } catch {}
     }
+    // Per-download cookie session is never shared — drop it with the item.
+    try {
+      const cf = String((rm as any)?.cookiesFile || '');
+      if (cf && cf.includes('jetro-cookies-')) await unlinkWithRetries(cf, 2);
+    } catch {}
   }
   broadcast(true);
 });
@@ -1839,6 +1936,8 @@ ipcMain.handle('dl:rename', async (_e, id: string, newName?: string) => {
   if (name.length > 255) throw new Error('File name is too long (max 255 characters).');
   if (/[<>:"/\\|?*]/.test(name) || /[\x00-\x1f]/.test(name))
     throw new Error('File name can\'t contain any of these characters: < > : " / \\ | ? *');
+  if (/%/.test(name))
+    throw new Error('File name can\'t contain % (it breaks video output paths).');
   if (/[. ]$/.test(name)) throw new Error('File name can\'t end with a space or dot.');
   if (/^\.+$/.test(name)) throw new Error('Please enter a valid file name.');
   const dir = path.dirname(it.savePath);
@@ -1869,6 +1968,11 @@ ipcMain.handle('dl:rename', async (_e, id: string, newName?: string) => {
       try { fs.renameSync(oldState, newState); } catch {}
     }
   } catch {}
+  // yt-dlp fragments/subs belong to the old stem and can't resume under the
+  // new name — drop them so they don't linger as orphans.
+  if ((it as any)?.via === 'ytdlp') {
+    try { await cleanupYtDlpTemps(oldPath); } catch {}
+  }
   it.filename = name;
   it.savePath = newPath;
   it.category = categoryOf(name);
@@ -1886,15 +1990,16 @@ ipcMain.handle('dl:redownload', async (_e, id: string) => {
   resetQueuePower(it.queueId || null);
   if (it.via === 'ytdlp') {
     killYtJob(id);
-    try { fs.unlinkSync(it.savePath); } catch {}
+    await unlinkWithRetries(it.savePath);
+    try { await cleanupYtDlpTemps(it.savePath); } catch {}
     it.downloadedBytes = 0;
     it.status = 'queued';
     it.error = undefined;
     it.speedBps = 0;
     touchTry(it);
     broadcast(true);
-    // yt-dlp items bypass the segmented queue pump — restart directly.
-    startYtDownload(it).catch(() => {});
+    // Go through the queue pump so limits / stopped queues / schedules apply.
+    pumpQueue();
     return it;
   }
   const r = runners.get(id);
@@ -1902,8 +2007,8 @@ ipcMain.handle('dl:redownload', async (_e, id: string) => {
     try { r.pause(); } catch {}
   }
   runners.delete(id);
-  try { fs.unlinkSync(it.savePath); } catch {}
-  try { fs.unlinkSync(it.savePath + '.jetro.json'); } catch {}
+  await unlinkWithRetries(it.savePath);
+  await unlinkWithRetries(it.savePath + '.jetro.json', 3);
   it.downloadedBytes = 0;
   it.status = 'queued';
   it.error = undefined;
@@ -1929,9 +2034,10 @@ ipcMain.handle('dl:refresh', async (_e, id: string) => {
   }
   if (p.totalBytes > 0 && it.status !== 'completed') {
     if (it.downloadedBytes > p.totalBytes) {
-      // Source shrank below our progress — drop stale resume state.
+      // Source shrank below our progress — drop stale partial + resume state.
       it.downloadedBytes = 0;
-      try { fs.unlinkSync(it.savePath + '.jetro.json'); } catch {}
+      await unlinkWithRetries(it.savePath, 3);
+      await unlinkWithRetries(it.savePath + '.jetro.json', 3);
     }
     it.totalBytes = p.totalBytes;
   }
@@ -2127,12 +2233,27 @@ ipcMain.handle('app:reset-all', async () => {
     runners.clear();
   } catch {}
   // Drop resume sidecars so reset entries can never be half-resurrected.
-  // The real files stay untouched on disk.
+  // The real files stay untouched on disk. yt-dlp fragments/subs are temp
+  // waste, not user files, so clean those too while entries still exist.
   for (const it of items) {
     try {
       if (it?.savePath) fs.unlinkSync(it.savePath + '.jetro.json');
     } catch {}
+    try {
+      if ((it as any)?.via === 'ytdlp' && it?.savePath) await cleanupYtDlpTemps(it.savePath);
+    } catch {}
+    try {
+      const cf = String((it as any)?.cookiesFile || '');
+      if (cf && cf.includes('jetro-cookies-')) await unlinkWithRetries(cf, 2);
+    } catch {}
   }
+  try {
+    for (const n of fs.readdirSync(storeDir)) {
+      if (/^jetro-cookies-.*\.txt$/i.test(n)) {
+        try { await unlinkWithRetries(path.join(storeDir, n), 2); } catch {}
+      }
+    }
+  } catch {}
   items = [];
   queues = [];
   try {
@@ -2412,6 +2533,16 @@ function pastedCookiesPath(): string {
     return path.join(storeDir, 'jetro-cookies.txt');
   } catch {
     return path.join(os.tmpdir(), 'jetro-cookies.txt');
+  }
+}
+
+/** Per-download cookie file so two videos never share (and clobber) one session. */
+function pastedCookiesPathFor(id: string): string {
+  const safe = String(id || '').replace(/[^a-z0-9_-]/gi, '').slice(0, 32) || 'item';
+  try {
+    return path.join(storeDir, `jetro-cookies-${safe}.txt`);
+  } catch {
+    return path.join(os.tmpdir(), `jetro-cookies-${safe}.txt`);
   }
 }
 
@@ -2935,6 +3066,9 @@ async function startYtDownload(item: Item) {
     if (fmt) {
       args.push('--extract-audio', '--audio-format', fmt);
       if (fmt === 'mp3') args.push('--audio-quality', '0');
+    } else if (ext === '.mp4') {
+      // MP4 audio container: keep mp4 so the file lands at the requested path.
+      args.push('--merge-output-format', 'mp4');
     } else if (ext !== '.webm') {
       args.push('--merge-output-format', 'm4a');
     }
@@ -2947,7 +3081,10 @@ async function startYtDownload(item: Item) {
       // height 0 / unknown = best available (e.g. 4K/8K if the page offers it).
       args.push('-f', 'bv*+ba/b');
     }
-    args.push('--merge-output-format', 'mp4', '-o', outTemplate, '--no-part');
+    // Honor the requested container instead of forcing mp4 under a .mkv/.webm name.
+    const vext = (path.extname(item.savePath) || '').toLowerCase();
+    const mergeFmt = vext === '.mkv' ? 'mkv' : vext === '.webm' ? 'webm' : 'mp4';
+    args.push('--merge-output-format', mergeFmt, '-o', outTemplate, '--no-part');
   }
   if (ffdir) args.push('--ffmpeg-location', ffdir);
   args.push(item.url);
@@ -3136,8 +3273,14 @@ async function startYtDownload(item: Item) {
         item.downloadedBytes = st.size;
         item.totalBytes = st.size;
       } catch {
-        // Merge finished but file stat failed (rare) — fall back to progress totals.
-        if (item.totalBytes > 0) item.downloadedBytes = item.totalBytes;
+        // Merge reported success but the expected file is missing (e.g. output
+        // landed under a different name) — never report a false completion.
+        item.status = 'error';
+        item.error = 'Download finished but the output file is missing: ' + item.savePath;
+        item.speedBps = 0;
+        touchTry(item);
+        broadcast(true);
+        return;
       }
       // Final file on disk is authoritative — estimate ends here.
       delete (item as any).totalBytesIsEstimate;
@@ -3194,24 +3337,38 @@ async function addVideoDownload(opts?: any): Promise<Item> {
   }
   const dir = assertDirWritable(String(opts?.dir || settings.downloadDir || '').trim() || settings.downloadDir);
   const savePath = path.join(dir, filename);
+  const nowYt = Date.now();
+  const newId = nowYt.toString(36) + Math.random().toString(36).slice(2, 7);
   if (opts?.replace) {
-    try { fs.unlinkSync(savePath); } catch {}
+    await unlinkWithRetries(savePath, 3);
+    try { await cleanupYtDlpTemps(savePath); } catch {}
   }
   const ck = ytDlpCookieArgs(opts, pageUrl);
   if (ck.error) throw new Error(ck.error);
-  // Persist pasted cookies as a file so pause/resume still finds them.
+  // Persist pasted cookies per download so pause/resume/retry of one video
+  // never picks up another video's pasted session.
   const pastedText = String(opts?.cookiesText ?? '').trim();
-  const storedCookiesFile = pastedText
-    ? pastedCookiesPath()
-    : (String(opts?.cookiesFile || '').trim() || undefined);
+  let storedCookiesFile: string | undefined;
+  if (pastedText) {
+    const perPath = pastedCookiesPathFor(newId);
+    try {
+      fs.mkdirSync(path.dirname(perPath), { recursive: true });
+      fs.writeFileSync(perPath, pastedText.endsWith('\n') ? pastedText : pastedText + '\n', 'utf8');
+      try { fs.chmodSync(perPath, 0o600); } catch {}
+      storedCookiesFile = perPath;
+    } catch (e: any) {
+      throw new Error('Could not save pasted cookies: ' + String(e?.message || e).slice(0, 160));
+    }
+  } else {
+    storedCookiesFile = String(opts?.cookiesFile || '').trim() || undefined;
+  }
   // Pre-merge estimate from probe (video+audio sum). Gives the bar a sane
   // starting total instead of 0 -> video-only -> video+audio growth.
   const estBytes = Math.max(0, Math.round(Number(opts?.estimatedBytes || 0)));
   const validQueueId =
     (opts as any)?.queueId && queues.some((q) => q.id === (opts as any).queueId) ? String((opts as any).queueId) : null;
-  const nowYt = Date.now();
   const item: Item = {
-    id: nowYt.toString(36) + Math.random().toString(36).slice(2, 7),
+    id: newId,
     url: pageUrl,
     filename,
     savePath,
@@ -3239,7 +3396,10 @@ async function addVideoDownload(opts?: any): Promise<Item> {
   };
   items.unshift(item);
   resetQueuePower(validQueueId);
-  await startYtDownload(item);
+  // Go through the queue pump so concurrency limits, stopped queues and
+  // schedule windows apply to videos just like segmented downloads.
+  broadcast(true);
+  pumpQueue();
   return item;
 }
 
