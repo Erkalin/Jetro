@@ -12,7 +12,7 @@ const isWin = process.platform === 'win32';
 const YTDLP_BIN = isWin ? 'yt-dlp.exe' : 'yt-dlp';
 const YTDLP_URL = `https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/${YTDLP_BIN}`;
 
-// Gyan essentials (GPLv3 static): contains bin/ffmpeg.exe + bin/ffprobe.exe (+ ffplay, unused).
+// Gyan essentials (GPLv3 static): contains bin/ffmpeg.exe (+ ffprobe/ffplay, unused — only ffmpeg is shipped).
 const FFMPEG_ZIP_URL = `https://github.com/GyanD/codexffmpeg/releases/download/${FFMPEG_VERSION}/ffmpeg-${FFMPEG_VERSION}-essentials_build.zip`;
 
 const QUICKJS_BIN = isWin ? 'quickjs.exe' : 'quickjs';
@@ -35,11 +35,11 @@ async function main() {
     if (!isWin) { try { fs.chmodSync(ytdlpOut, 0o755); } catch {} }
   }
 
-  // 2. ffmpeg + ffprobe (extract only the two needed exes, drop ffplay + docs).
+  // 2. ffmpeg only (extract just ffmpeg.exe, drop ffprobe + ffplay + docs).
+  // ffprobe was removed: yt-dlp merges with ffmpeg alone, app never calls ffprobe.
   const ffmpegOut = path.join(outDir, isWin ? 'ffmpeg.exe' : 'ffmpeg');
-  const ffprobeOut = path.join(outDir, isWin ? 'ffprobe.exe' : 'ffprobe');
-  if (fs.existsSync(ffmpegOut) && fs.existsSync(ffprobeOut)) {
-    console.log('[fetch-binaries] ffmpeg+ffprobe exist, skipping');
+  if (fs.existsSync(ffmpegOut)) {
+    console.log('[fetch-binaries] ffmpeg exists, skipping');
   } else {
     const zipPath = path.join(outDir, `_ffmpeg-${FFMPEG_VERSION}.zip`);
     if (!fs.existsSync(zipPath)) {
@@ -48,13 +48,11 @@ async function main() {
     } else {
       console.log('[fetch-binaries] ffmpeg zip already downloaded, reusing');
     }
-    console.log('[fetch-binaries] extracting ffmpeg.exe + ffprobe.exe');
+    console.log('[fetch-binaries] extracting ffmpeg.exe');
     await extractFfmpeg(zipPath, outDir);
-    for (const f of [ffmpegOut, ffprobeOut]) {
-      if (!fs.existsSync(f)) throw new Error('missing after extract: ' + f);
-      console.log(`[fetch-binaries] ok ${path.basename(f)} (${fs.statSync(f).size} bytes)`);
-      if (!isWin) { try { fs.chmodSync(f, 0o755); } catch {} }
-    }
+    if (!fs.existsSync(ffmpegOut)) throw new Error('missing after extract: ' + ffmpegOut);
+    console.log(`[fetch-binaries] ok ${path.basename(ffmpegOut)} (${fs.statSync(ffmpegOut).size} bytes)`);
+    if (!isWin) { try { fs.chmodSync(ffmpegOut, 0o755); } catch {} }
     try { fs.unlinkSync(zipPath); } catch {}
   }
 
@@ -96,7 +94,7 @@ function download(url: string, dest: string, redirects = 5): Promise<void> {
   });
 }
 
-/** Extract only ffmpeg(.exe)+ffprobe(.exe) from the Gyan zip via PowerShell (Windows) or unzip (posix). */
+/** Extract only ffmpeg(.exe) from the Gyan zip via PowerShell (Windows) or unzip (posix). */
 function extractFfmpeg(zipPath: string, outDir: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (isWin) {
@@ -109,7 +107,6 @@ function extractFfmpeg(zipPath: string, outDir: string): Promise<void> {
         `$b = Get-ChildItem -Recurse -Directory '${tmp}' | Where-Object { Test-Path (Join-Path $_.FullName 'bin') } | Select-Object -First 1;`,
         `if (-not $b) { $b = Get-Item '${tmp}' };`,
         `Copy-Item (Join-Path $b.FullName 'bin\\ffmpeg.exe') '${path.join(outDir, 'ffmpeg.exe')}' -Force;`,
-        `Copy-Item (Join-Path $b.FullName 'bin\\ffprobe.exe') '${path.join(outDir, 'ffprobe.exe')}' -Force;`,
         `Remove-Item -Recurse -Force '${tmp}';`,
       ].join(' ');
       execFile('powershell.exe', ['-NoProfile', '-Command', ps], { timeout: 300000 }, (err, _o, se) => {
@@ -117,7 +114,7 @@ function extractFfmpeg(zipPath: string, outDir: string): Promise<void> {
         else resolve();
       });
     } else {
-      execFile('unzip', ['-j', '-o', zipPath, '*/bin/ffmpeg', '*/bin/ffprobe', '-d', outDir], { timeout: 300000 }, (err, _o, se) => {
+      execFile('unzip', ['-j', '-o', zipPath, '*/bin/ffmpeg', '-d', outDir], { timeout: 300000 }, (err, _o, se) => {
         if (err) reject(new Error(String(se || err.message).slice(0, 500)));
         else resolve();
       });

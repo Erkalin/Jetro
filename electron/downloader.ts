@@ -20,7 +20,7 @@ export interface ProbeResult {
 }
 
 const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jetro/1.0.0 segmented downloader';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jetro/1.1.0 segmented downloader';
 
 /**
  * Ensure a file's parent folder exists. A bare Windows drive ("C:") is

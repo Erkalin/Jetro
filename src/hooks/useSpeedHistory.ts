@@ -34,17 +34,22 @@ const PERSIST_MIN_MS = 5000;
 // so the graph stays flat at zero across the pause and then jumps vertically,
 // instead of drawing a diagonal ramp from stop time to resume time.
 const RESUME_ANCHOR_GAP_MS = 2000;
-// ETA uses a much longer delay window than the 1s speed display so brief
-// stalls/surges barely move it: rate = bytes progressed over up to 20s.
-const ETA_WINDOW_MS = 20000;
-const ETA_MIN_SPAN_MS = 4000;
+// ETA combines a stable long window with a responsive short window. The long
+// window keeps the display still during brief stalls/surges; the short window
+// (a few seconds) is what makes the countdown truthful in the final stretch —
+// a 20s average alone stays dragged down by a slow start and keeps showing
+// "10-15s" when only 1-2s of bytes are left.
+const ETA_WINDOW_MS = 10000;
+const ETA_MIN_SPAN_MS = 3000;
+const ETA_SHORT_WINDOW_MS = 3500;
+const ETA_SHORT_MIN_SPAN_MS = 1500;
 
-/** Bytes progressed per second over the trailing ETA window (0 if unusable). */
-function progressRate(arr: SpeedSample[]): number {
+/** Bytes progressed per second over a trailing window (0 if unusable). */
+function progressRate(arr: SpeedSample[], windowMs: number, minSpanMs: number): number {
   const n = arr.length;
   if (n < 2) return 0;
   const last = arr[n - 1];
-  const cutoff = last.t - ETA_WINDOW_MS;
+  const cutoff = last.t - windowMs;
   let first = arr[0];
   for (const s of arr) {
     if (s.t >= cutoff) {
@@ -53,7 +58,7 @@ function progressRate(arr: SpeedSample[]): number {
     }
   }
   const spanMs = last.t - first.t;
-  if (spanMs < ETA_MIN_SPAN_MS) return 0;
+  if (spanMs < minSpanMs) return 0;
   const delta = last.done - first.done;
   if (delta <= 0) return 0;
   return delta / (spanMs / 1000);
@@ -69,11 +74,12 @@ function progressRate(arr: SpeedSample[]): number {
  * keeps average / peak / graph across restarts. ETA smoothing reconverges
  * live within seconds and is intentionally not stored.
  *
- * ETA state is derived from actual byte progress over a long (~20s) window —
- * not from the instantaneous speed — then smoothed asymmetrically (fast to
- * follow speed-ups, slow to follow slow-downs) so the countdown glides
- * instead of jumping. Smoothing steps are gated to sample pushes (1Hz), so
- * the 10Hz broadcast rate can't accelerate convergence.
+ * ETA state is derived from actual byte progress over a short (~3.5s,
+ * responsive) + long (~10s, stable) window — not from the instantaneous
+ * speed — then smoothed asymmetrically (fast to follow speed-ups, slow to
+ * follow slow-downs) so the countdown glides instead of jumping, but still
+ * snaps in the final seconds. Smoothing steps are gated to sample pushes
+ * (1Hz), so the 10Hz broadcast rate can't accelerate convergence.
  *
  * Sampling notes:
  * - Sample arrays are replaced (never mutated in place) so consumers memoizing
@@ -205,10 +211,17 @@ export default function useSpeedHistory(items: Item[]) {
           const remaining = Math.max(0, total - done);
           if (remaining <= 0) {
             etaSecRef.current.delete(it.id);
+            etaBpsRef.current.delete(it.id);
           } else {
-            let rate = progressRate(next);
+            const longRate = progressRate(next, ETA_WINDOW_MS, ETA_MIN_SPAN_MS);
+            const shortRate = progressRate(next, ETA_SHORT_WINDOW_MS, ETA_SHORT_MIN_SPAN_MS);
+            // Prefer the responsive short window when it has enough span;
+            // otherwise use the stable long window. This keeps the countdown
+            // honest at the tail (fast current speed) while staying calm
+            // mid-download (brief stalls don't swing it).
+            let rate = shortRate > 0 ? shortRate : longRate;
             if (!(rate > 0)) {
-              // Warm-up (<4s of history): fall back to live speed, then session avg.
+              // Warm-up (not enough span yet): fall back to live speed, then session avg.
               if (bps > 0) {
                 rate = bps;
               } else {
@@ -228,12 +241,37 @@ export default function useSpeedHistory(items: Item[]) {
               const smoothBps =
                 prevBps == null ? rate : prevBps + (rate - prevBps) * (rate >= prevBps ? 0.4 : 0.12);
               etaBpsRef.current.set(it.id, smoothBps);
-              const target = remaining / smoothBps;
+              // For the countdown itself, never let a lagging smoothed rate
+              // overstate the tail: when the last few seconds were faster than
+              // the smoothed average, trust the faster (more recent) signal.
+              // During a genuine stall shortRate collapses to 0, so the max
+              // still holds the stable value and ETA degrades gracefully.
+              let responsiveBps = smoothBps;
+              if (shortRate > responsiveBps) responsiveBps = shortRate;
+              // Final stretch (last ~8% or live speed clearly faster): also
+              // consider the instantaneous backend speed so "1-2s left" can't
+              // display as "10-15s".
+              const doneFrac = total > 0 ? done / total : 0;
+              if ((doneFrac >= 0.92 || remaining / responsiveBps < 10) && bps > responsiveBps) {
+                responsiveBps = bps;
+              }
+              const target = remaining / Math.max(1, responsiveBps);
               const prevSec = etaSecRef.current.get(it.id);
-              const smoothSec =
-                prevSec == null
-                  ? target
-                  : prevSec + (target - prevSec) * (target < prevSec ? 0.5 : 0.15);
+              let smoothSec: number;
+              if (prevSec == null) {
+                smoothSec = target;
+              } else if (target < prevSec) {
+                // Countdown drops fast (and snaps when under ~5s) so the last
+                // seconds tick 3 → 2 → 1 instead of hovering at 10+.
+                const downAlpha = target < 5 ? 1 : target < 10 ? 0.85 : 0.55;
+                smoothSec = prevSec + (target - prevSec) * downAlpha;
+                // Never let smoothing hold the display more than a couple of
+                // seconds above what the bytes actually need.
+                const ceiling = target + (target < 10 ? 2 : target * 0.3 + 2);
+                if (smoothSec > ceiling) smoothSec = ceiling;
+              } else {
+                smoothSec = prevSec + (target - prevSec) * 0.15;
+              }
               etaSecRef.current.set(it.id, Math.max(0, smoothSec));
             }
           }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FiActivity, FiArchive, FiArrowDown, FiBox, FiCheckCircle, FiChevronDown, FiClipboard,
   FiClock, FiDisc, FiDownloadCloud, FiEdit2, FiExternalLink, FiFileText, FiFilm,
-  FiFolder, FiGlobe, FiGrid, FiHardDrive, FiInbox, FiInfo, FiLayers, FiList, FiMonitor, FiMoon, FiMusic, FiPause, FiPlay,
+  FiFolder, FiGlobe, FiGrid, FiHardDrive, FiInbox, FiInfo, FiLayers, FiList, FiMoon, FiMusic, FiPause, FiPlay,
   FiPlus, FiRefreshCw, FiRotateCcw, FiSettings, FiSquare, FiSun, FiTool, FiTrash2, FiX, FiXCircle, FiZap,
 } from 'react-icons/fi';
 import { MdExtension } from 'react-icons/md';
@@ -35,7 +35,8 @@ import {
   stripGlobalScheduler,
 } from '@/lib/schedule';
 import { CONNECTION_OPTIONS, normalizeConnectionOption, speedLimitOptions } from '@/lib/options';
-import { normalizeTheme, readInitialTheme, resolveTheme, THEME_KEY } from '@/lib/theme';
+import { normalizeTheme, readInitialTheme, resolveDataTheme, resolveTheme, themeColorOf, THEME_KEY } from '@/lib/theme';
+import { isDarkThemeId } from '@/lib/themes';
 import { LANG_KEY, useLanguage } from '@/locale/LanguageContext';
 import { SPEED_HISTORY_KEY } from '@/lib/speedHistoryStore';
 import {
@@ -64,14 +65,17 @@ import {
 import { menuAnchor } from '@/lib/contextMenu';
 import { hasBackend, openExternalUrl } from '@/api/jetro';
 import OsFileIcon from '@/components/OsFileIcon';
+import ThemePicker from '@/components/ThemePicker';
+import LanguagePicker from '@/components/LanguagePicker';
+import { LANGUAGE_MAP } from '@/locale/languages';
 import DownloadAnalytics from '@/components/DownloadAnalytics';
 import useEscape from '@/hooks/useEscape';
 import useContextMenuNudge from '@/hooks/useContextMenuNudge';
 import useSpeedHistory from '@/hooks/useSpeedHistory';
 
 export default function App() {
-  const { t, lang, setLang, isRTL } = useLanguage();
-  const localeName = lang === 'fa' ? 'fa-IR-u-ca-persian' : undefined;
+  const { t, lang, setLang } = useLanguage();
+  const localeName = lang === 'fa' ? 'fa-IR-u-ca-persian' : (LANGUAGE_MAP[lang]?.locale || undefined);
   const [items, setItems] = useState<Item[]>([]);
   // Session speed history for the analytics view (avg / peak / graph).
   const getSpeedStats = useSpeedHistory(items);
@@ -177,32 +181,40 @@ export default function App() {
   const [cookieError, setCookieError] = useState('');
   const [binStatus, setBinStatus] = useState<BinaryStatus | null>(null);
   const [binRefreshing, setBinRefreshing] = useState(false);
-  const [settings, setSettings] = useState<any>({ maxConnections: 8, maxConcurrentDownloads: 3, downloadDir: '', speedLimitKBps: 0, proxyMode: 'system', proxyType: 'http', proxyHost: '', proxyPort: 8080, proxyUser: '', proxyPass: '', proxyBypass: 'localhost,127.0.0.1,::1', closeAction: 'ask', theme: 'system', autoCaptureClipboard: true, autoRetryEnabled: true, maxRetries: 3, retryDelaySec: 5, checkUpdatesOnStart: true });
+  const [settings, setSettings] = useState<any>({ maxConnections: 8, maxConcurrentDownloads: 3, downloadDir: '', speedLimitKBps: 0, proxyMode: 'system', proxyType: 'http', proxyHost: '', proxyPort: 8080, proxyUser: '', proxyPass: '', proxyBypass: 'localhost,127.0.0.1,::1', closeAction: 'ask', theme: 'system', autoCaptureClipboard: true, autoRetryEnabled: true, maxRetries: 3, retryDelaySec: 5, checkUpdatesOnStart: true, launchAtStartup: false });
+  const [isPortable, setIsPortable] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; updateAvailable: boolean; url: string; error?: string } | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
-  const [appVersion, setAppVersion] = useState('1.0.0');
+  const [appVersion, setAppVersion] = useState('1.1.0');
   // Per-session dismissal for the update banner (reset when a newer tag appears).
   const [updateDismissed, setUpdateDismissed] = useState<string | null>(null);
   const showUpdateBanner = !!updateInfo?.updateAvailable && updateDismissed !== updateInfo.latest;
 
-  // ---- dark mode (glass-blended): light / dark / system ----
+  // ---- theme gallery: explicit id on <html data-theme>, system resolves to jetro/midnight ----
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>(() => readInitialTheme());
-  const resolvedTheme = useMemo(() => resolveTheme(themeChoice), [themeChoice]);
-  // Apply to <html data-theme> + persist locally (instant, no FOUC on next launch via index.html bootstrap).
-  useEffect(() => {
+  const resolvedMode = useMemo(() => resolveTheme(themeChoice), [themeChoice]);
+  const dataTheme = useMemo(() => resolveDataTheme(themeChoice), [themeChoice]);
+  const applyMetaThemeColor = (color: string) => {
     try {
-      document.documentElement.setAttribute('data-theme', resolvedTheme);
-      localStorage.setItem(THEME_KEY, themeChoice);
       const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.setAttribute('content', resolvedTheme === 'dark' ? '#080f20' : '#f2f7fd');
+      if (meta) meta.setAttribute('content', color);
       else {
         const m = document.createElement('meta');
         m.name = 'theme-color';
-        m.content = resolvedTheme === 'dark' ? '#080f20' : '#f2f7fd';
+        m.content = color;
         document.head.appendChild(m);
       }
     } catch {}
-  }, [resolvedTheme, themeChoice]);
+  };
+  // Apply to <html data-theme> + persist locally (instant, no FOUC on next launch via index.html bootstrap).
+  useEffect(() => {
+    try {
+      document.documentElement.setAttribute('data-theme', dataTheme);
+      localStorage.setItem(THEME_KEY, themeChoice);
+      applyMetaThemeColor(themeColorOf(themeChoice));
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataTheme, themeChoice]);
   // Follow the OS while in "system" mode.
   useEffect(() => {
     if (themeChoice !== 'system') return;
@@ -210,11 +222,14 @@ export default function App() {
     if (!mq) return;
     const onChange = () => {
       try {
-        document.documentElement.setAttribute('data-theme', mq.matches ? 'dark' : 'light');
+        const dark = mq.matches;
+        document.documentElement.setAttribute('data-theme', dark ? 'midnight' : 'jetro');
+        applyMetaThemeColor(dark ? '#080f20' : '#f2f7fd');
       } catch {}
     };
     mq.addEventListener?.('change', onChange);
     return () => mq.removeEventListener?.('change', onChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [themeChoice]);
   const applyThemeChoice = (next: ThemeChoice) => {
     const clean = normalizeTheme(next);
@@ -226,7 +241,16 @@ export default function App() {
     setDraftSettings((prev: any) => (prev ? { ...prev, theme: clean } : prev));
     try { window.jetro?.saveSettings({ theme: clean })?.catch(() => {}); } catch {}
   };
-  const toggleTheme = () => applyThemeChoice(resolvedTheme === 'dark' ? 'light' : 'dark');
+  // Header toggle flips between light/dark bases, remembering the last theme
+  // picked per base (e.g. Dracula → Solarized → back to Dracula).
+  const lastLightRef = useRef<ThemeChoice>('jetro');
+  const lastDarkRef = useRef<ThemeChoice>('midnight');
+  useEffect(() => {
+    if (themeChoice === 'system') return;
+    if (isDarkThemeId(themeChoice)) lastDarkRef.current = themeChoice;
+    else lastLightRef.current = themeChoice;
+  }, [themeChoice]);
+  const toggleTheme = () => applyThemeChoice(resolvedMode === 'dark' ? lastLightRef.current : lastDarkRef.current);
 
   // Persist viewing mode + details column layout (order + widths).
   useEffect(() => {
@@ -235,7 +259,6 @@ export default function App() {
   useEffect(() => {
     try { localStorage.setItem(DETAIL_LAYOUT_KEY, JSON.stringify(detailLayout)); } catch {}
   }, [detailLayout]);
-  const setViewModeAndPersist = (m: ViewMode) => setViewMode(m);
   const moveDetailCol = (from: DetailColId, to: DetailColId, after = false) => {
     if (from === to) return;
     setDetailLayout((prev) => {
@@ -268,10 +291,10 @@ export default function App() {
     const onMove = (ev: MouseEvent) => {
       const r = resizeRef.current;
       if (!r) return;
-      // The handle sits on the inline-end edge (right in LTR, left in RTL),
-      // so in RTL dragging left widens: flip the pointer delta.
+      // Downloads list stays LTR in every language, so the resize handle
+      // is always on the right edge: dragging right widens.
       const dx = ev.clientX - r.startX;
-      const next = Math.min(600, Math.max(DETAIL_MIN_WIDTH[r.col], Math.round(r.startW + (isRTL ? -dx : dx))));
+      const next = Math.min(600, Math.max(DETAIL_MIN_WIDTH[r.col], Math.round(r.startW + dx)));
       setDetailLayout((prev) => (prev.widths[r.col] === next ? prev : { ...prev, widths: { ...prev.widths, [r.col]: next } }));
     };
     const onUp = () => {
@@ -328,6 +351,8 @@ export default function App() {
   // toolbar selection + queue dropdowns
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [queueMenu, setQueueMenu] = useState<null | 'start' | 'stop'>(null);
+  const queueStartRef = useRef<HTMLDivElement>(null);
+  const queueStopRef = useRef<HTMLDivElement>(null);
 
   // remove / delete confirmation ({ id, deleteFile }: deleteFile removes the file from disk)
   const [pendingRemove, setPendingRemove] = useState<{ id: string; deleteFile: boolean } | null>(null);
@@ -369,11 +394,9 @@ export default function App() {
       setSettings(stripGlobalScheduler(s));
       // Backend wins on first load when it has an explicit theme;
       // otherwise keep the localStorage / OS choice already applied.
-      const t = (s as any)?.theme;
-      if (t === 'light' || t === 'dark' || t === 'system') {
-        setThemeChoice(t);
-        try { localStorage.setItem(THEME_KEY, t); } catch {}
-      }
+      const t = normalizeTheme((s as any)?.theme);
+      setThemeChoice(t);
+      try { localStorage.setItem(THEME_KEY, t); } catch {}
       // Update check on startup (default ON).
       if ((s as any)?.checkUpdatesOnStart !== false) {
         setUpdateChecking(true);
@@ -385,6 +408,9 @@ export default function App() {
     window.jetro!.listQueues().then(setQueues).catch(() => {});
     window.jetro!.getVersion?.().then((v) => {
       if (v) setAppVersion(String(v).replace(/^v/i, ''));
+    }).catch(() => {});
+    window.jetro!.isPortable?.().then((p) => {
+      setIsPortable(!!p);
     }).catch(() => {});
     const off1 = window.jetro!.onUpdate((incoming) => {
       if (!initialLoadDoneRef.current) {
@@ -412,8 +438,7 @@ export default function App() {
       const clean = stripGlobalScheduler(s);
       setSettings(clean);
       setDraftSettings((prev: any) => (showSettingsRef.current && prev ? stripGlobalScheduler({ ...prev, ...clean }) : prev));
-      const t = (s as any)?.theme;
-      if (t === 'light' || t === 'dark' || t === 'system') setThemeChoice(t);
+      if ((s as any)?.theme !== undefined) setThemeChoice(normalizeTheme((s as any)?.theme));
     });
     // Main process X-button request — show the styled close dialog.
     const off5 = window.jetro!.onCloseRequest?.(() => {
@@ -1037,7 +1062,6 @@ export default function App() {
       setUrlError(e?.message || t.urlError.invalid);
       return;
     }
-    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
     // Make sure we know the original format before comparing: probe now if the
     // background probe hasn't answered yet (e.g. user clicked Download fast).
     // Untouched auto-fill follows the fresh probe result so a fast click on an
@@ -1949,6 +1973,25 @@ export default function App() {
   // close queue dropdown on escape
   useEscape(!!queueMenu, () => setQueueMenu(null));
 
+  // close queue dropdown on outside click (document listener instead of a
+  // backdrop div: a fixed backdrop breaks inside backdrop-filter ancestors
+  // and swallows the click needed to switch directly to the other dropdown)
+  useEffect(() => {
+    if (!queueMenu) return;
+    const handler = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (
+        queueStartRef.current?.contains(target) ||
+        queueStopRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setQueueMenu(null);
+    };
+    document.addEventListener('pointerdown', handler);
+    return () => document.removeEventListener('pointerdown', handler);
+  }, [queueMenu]);
+
   // Escape dismisses the batch dialogs (not while resolving/adding)
   useEscape(showBatch, () => closeBatch());
 
@@ -2038,11 +2081,11 @@ export default function App() {
             <input className="search" dir="auto" placeholder={t.topbar.searchPlaceholder} value={query} onChange={(e) => setQuery(e.target.value)} />
             <button
               className="theme-toggle"
-              title={resolvedTheme === 'dark' ? t.topbar.toLight : t.topbar.toDark}
-              aria-label={resolvedTheme === 'dark' ? t.topbar.toLight : t.topbar.toDark}
+              title={resolvedMode === 'dark' ? t.topbar.toLight : t.topbar.toDark}
+              aria-label={resolvedMode === 'dark' ? t.topbar.toLight : t.topbar.toDark}
               onClick={toggleTheme}
             >
-              {resolvedTheme === 'dark' ? <FiSun size={17} /> : <FiMoon size={17} />}
+              {resolvedMode === 'dark' ? <FiSun size={17} /> : <FiMoon size={17} />}
             </button>
           </div>
 
@@ -2051,11 +2094,9 @@ export default function App() {
             <button className="btn" disabled={!canStop} title={canStop && selected ? t.toolbar.stopTitleReady(selected.filename) : t.toolbar.stopTitleIdle} onClick={handleStopSelected}><FiPause className="btn-icon" /> {t.common.stop}</button>
             <button className="btn" disabled={!canStopAll} title={canStopAll ? t.toolbar.stopAllReady : t.toolbar.stopAllIdle} onClick={handleStopAll}><FiSquare className="btn-icon" /> {t.toolbar.stopAll}</button>
             <span className="toolbar-sep" />
-            <div className="toolbar-dropdown">
+            <div className="toolbar-dropdown" ref={queueStartRef}>
               <button className="btn" title={t.toolbar.startQueueTitle} onClick={() => setQueueMenu(queueMenu === 'start' ? null : 'start')}><FiPlay className="btn-icon" /> {t.toolbar.startQueue} <FiChevronDown className="btn-icon" /></button>
               {queueMenu === 'start' && (
-                <>
-                  <div className="dropdown-backdrop" onClick={() => setQueueMenu(null)} />
                   <div className="dropdown-menu">
                     {queues.length === 0 && <div className="dropdown-empty">{t.toolbar.noQueues}</div>}
                     {queues.map((q) => (
@@ -2071,14 +2112,11 @@ export default function App() {
                       ><FiPlay className="btn-icon" /> {q.name}{q.running ? t.common.runningSuffix : ''}</button>
                     ))}
                   </div>
-                </>
               )}
             </div>
-            <div className="toolbar-dropdown">
+            <div className="toolbar-dropdown" ref={queueStopRef}>
               <button className="btn" title={t.toolbar.stopQueueTitle} onClick={() => setQueueMenu(queueMenu === 'stop' ? null : 'stop')}><FiSquare className="btn-icon" /> {t.toolbar.stopQueue} <FiChevronDown className="btn-icon" /></button>
               {queueMenu === 'stop' && (
-                <>
-                  <div className="dropdown-backdrop" onClick={() => setQueueMenu(null)} />
                   <div className="dropdown-menu">
                     {queues.length === 0 && <div className="dropdown-empty">{t.toolbar.noQueues}</div>}
                     {queues.map((q) => (
@@ -2094,7 +2132,6 @@ export default function App() {
                       ><FiSquare className="btn-icon" /> {q.name}{q.running ? '' : t.common.stoppedSuffix}</button>
                     ))}
                   </div>
-                </>
               )}
             </div>
             <span className="toolbar-spacer" />
@@ -2105,7 +2142,7 @@ export default function App() {
                 aria-checked={viewMode === 'cards'}
                 title={t.toolbar.cardView}
                 className={'view-toggle-btn' + (viewMode === 'cards' ? ' active' : '')}
-                onClick={() => setViewModeAndPersist('cards')}
+                onClick={() => setViewMode('cards')}
               ><FiGrid size={15} /></button>
               <button
                 type="button"
@@ -2113,7 +2150,7 @@ export default function App() {
                 aria-checked={viewMode === 'details'}
                 title={t.toolbar.detailsView}
                 className={'view-toggle-btn' + (viewMode === 'details' ? ' active' : '')}
-                onClick={() => setViewModeAndPersist('details')}
+                onClick={() => setViewMode('details')}
               ><FiList size={15} /></button>
             </div>
           </div>
@@ -2132,6 +2169,7 @@ export default function App() {
           )}
           <div
             className="list"
+            dir="ltr"
             onDragOver={(e) => { e.preventDefault(); }}
             onDrop={async (e) => {
               e.preventDefault();
@@ -2229,12 +2267,12 @@ export default function App() {
                         e.preventDefault();
                         if (!dragColRef.current || dragColRef.current === col) return;
                         // Position-aware insertion: which physical half of the
-                        // target is the pointer over? In LTR the right half
-                        // means "after"; in RTL the visual flow is mirrored.
+                        // target is the pointer over? The downloads list is
+                        // always LTR, so the right half means "after".
                         const rect = e.currentTarget.getBoundingClientRect();
                         const visualAfter = rect.width > 0 && e.clientX - rect.left > rect.width / 2;
                         const side = visualAfter ? 'right' : 'left';
-                        dropAfterRef.current = isRTL ? !visualAfter : visualAfter;
+                        dropAfterRef.current = visualAfter;
                         if (dropCol !== col) setDropCol(col);
                         if (dropSideRef.current !== side) {
                           dropSideRef.current = side;
@@ -2424,7 +2462,7 @@ export default function App() {
               const qNameOf = it.queueId ? queueById(it.queueId)?.name : null;
               return (
                 <div
-                  className={'card' + (selectedId === it.id ? ' selected' : '')}
+                  className={'card download-card' + (selectedId === it.id ? ' selected' : '')}
                   key={it.id}
                   onClick={(e) => toggleSelect(e, it.id)}
                   onContextMenu={(e) => openItemCtx(e, it)}
@@ -3389,45 +3427,21 @@ export default function App() {
 
             <div className="settings-section">
               <h3 className="settings-section-title"><FiBox className="inline-icon" /> {t.settings.appSection}</h3>
-              <p className="settings-section-sub">{t.settings.appSub}</p>
+              <p className="settings-section-sub">{isPortable ? t.settings.appSub : ((t.settings as any).appSubInstalled ?? t.settings.appSub)}</p>
               <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>{t.language.label}</label>
-              <div className="theme-segment lang-segment" data-active={lang} role="radiogroup" aria-label={t.language.label}>
-                {([
-                  { key: 'en', label: t.language.english },
-                  { key: 'fa', label: t.language.persian },
-                ] as const).map(({ key, label }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    role="radio"
-                    aria-checked={lang === key}
-                    className={lang === key ? 'active' : ''}
-                    onClick={() => setLang(key)}
-                  ><span key={label} className="lang-label">{label}</span></button>
-                ))}
-              </div>
+              <LanguagePicker value={lang} onChange={setLang} label={t.language.label} />
               <label className="form-label" style={{ display: 'block', marginBottom: 6 }}>{t.settings.appearance}</label>
-              <div className="theme-segment" role="radiogroup" aria-label={t.settings.appearance}>
-                {([
-                  { key: 'light', label: t.settings.light, Icon: FiSun },
-                  { key: 'dark', label: t.settings.dark, Icon: FiMoon },
-                  { key: 'system', label: t.settings.system, Icon: FiMonitor },
-                ] as const).map(({ key, label, Icon }) => (
-                  <button
-                    key={key}
-                    type="button"
-                    role="radio"
-                    aria-checked={normalizeTheme(draftSettings.theme) === key}
-                    className={normalizeTheme(draftSettings.theme) === key ? 'active' : ''}
-                    onClick={() => {
-                      setDraftSettings({ ...draftSettings, theme: key });
-                      // Live preview without waiting for Save.
-                      setThemeChoice(key);
-                      try { localStorage.setItem(THEME_KEY, key); } catch {}
-                    }}
-                  ><Icon size={14} /> {label}</button>
-                ))}
-              </div>
+              <ThemePicker
+                value={normalizeTheme(draftSettings.theme)}
+                onChange={(key) => {
+                  setDraftSettings({ ...draftSettings, theme: key });
+                  // Live preview without waiting for Save.
+                  setThemeChoice(key);
+                  try { localStorage.setItem(THEME_KEY, key); } catch {}
+                }}
+                getLabel={(id) => t.settings.themes[id] ?? id}
+              />
+              <p className="form-hint">{t.settings.appearanceHint}</p>
               <label style={{ fontSize: 12 }}>{t.settings.closeAction}</label>
               <select
                 className="input"
@@ -3438,6 +3452,15 @@ export default function App() {
                 <option value="minimize">{t.settings.minimize}</option>
                 <option value="exit">{t.settings.exit}</option>
               </select>
+              <label style={{ fontSize: 13, marginTop: 10, display: 'block', opacity: isPortable ? 0.6 : 1 }}>
+                <input
+                  type="checkbox"
+                  checked={draftSettings.launchAtStartup === true}
+                  disabled={isPortable}
+                  onChange={(e) => setDraftSettings({ ...draftSettings, launchAtStartup: e.target.checked })}
+                /> {t.settings.startup}
+              </label>
+              <p className="form-hint">{isPortable ? t.settings.startupPortable : t.settings.startupHint}</p>
             </div>
 
             <div
@@ -3577,8 +3600,9 @@ export default function App() {
           <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
             <h2 className="modal-title"><FiXCircle className="inline-icon" /> {t.discard.title}</h2>
             <p>{t.discard.body}</p>
-            <div className="row" style={{ marginTop: 16 }}>
-              <button className="btn btn-primary" autoFocus onClick={() => setShowDiscardConfirm(false)}>{t.discard.keep}</button>
+            <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" onClick={saveSettingsAndClose}>{t.discard.save}</button>
+              <button className="btn" autoFocus onClick={() => setShowDiscardConfirm(false)}>{t.discard.keep}</button>
               <button className="btn btn-danger" onClick={discardSettingsChanges}>{t.discard.discard}</button>
             </div>
           </div>

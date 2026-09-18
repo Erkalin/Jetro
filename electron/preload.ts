@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('jetro', {
   list: () => ipcRenderer.invoke('dl:list'),
   getSegments: (id: string) => ipcRenderer.invoke('dl:segments', id),
   getSettings: () => ipcRenderer.invoke('settings:get'),
+  isPortable: () => ipcRenderer.invoke('app:is-portable'),
   saveSettings: (s: any) => ipcRenderer.invoke('settings:save', s),
   pickFolder: (defaultPath?: string) => ipcRenderer.invoke('dialog:folder', defaultPath),
   pickFile: () => ipcRenderer.invoke('dialog:file'),

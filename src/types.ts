@@ -39,7 +39,37 @@ export interface Queue {
   powerFiredAt?: number | null;
 }
 
-export type ThemeChoice = 'light' | 'dark' | 'system';
+export type ThemeId =
+  | 'jetro'
+  | 'midnight'
+  | 'system'
+  | 'gray'
+  | 'silver'
+  | 'crimson'
+  | 'coral'
+  | 'amber'
+  | 'teal'
+  | 'navy'
+  | 'turquoise'
+  | 'indigo'
+  | 'aqua'
+  | 'nord'
+  | 'dracula'
+  | 'solarized'
+  | 'forest'
+  | 'blossom'
+  | 'espresso'
+  | 'lavender'
+  | 'ember'
+  | 'pistachio'
+  | 'ruby'
+  | 'scarlet'
+  | 'gold'
+  | 'hunter'
+  | 'clover';
+
+/** Kept for backward compatibility — identical to ThemeId. */
+export type ThemeChoice = ThemeId;
 
 export type ViewMode = 'cards' | 'details';
 

@@ -5,13 +5,13 @@ import type { AppStrings } from '@/locale/en';
 // ---------- New Batch Download helpers (pattern with * → many URLs) ----------
 export const BATCH_MAX_FILES = 200;
 
-export function padBatchNum(n: number, size: number): string {
+function padBatchNum(n: number, size: number): string {
   const s = String(n);
   if (s.length >= size) return s;
   return '0'.repeat(size - s.length) + s;
 }
 
-export function expandBatchUrls(
+function expandBatchUrls(
   pattern: string,
   mode: BatchMode,
   fromNum: number,
@@ -36,7 +36,7 @@ export function expandBatchUrls(
   return out;
 }
 
-export function isSingleLetter(s: string): boolean {
+function isSingleLetter(s: string): boolean {
   return /^[A-Za-z]$/.test(String(s || ''));
 }
 

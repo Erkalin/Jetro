@@ -2,9 +2,8 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// electron-builder names the portable exe "${productName} ${version}.exe",
-// so version 1.0.0 becomes "Jetro 1.0.0.exe". Full x.y.z is used as-is
-// for cleaner blending with GitHub tags (v1.0.0).
+// electron-builder names the portable exe "${productName}.exe",
+// so it becomes "Jetro.exe" (no version in the filename).
 
 function main() {
   const root = process.cwd();
@@ -18,7 +17,7 @@ function main() {
   const useLocal = fs.existsSync(localBin);
   const cmd = useLocal ? localBin : 'npx';
   const args = useLocal ? process.argv.slice(2) : ['electron-builder', ...process.argv.slice(2)];
-  console.log(`[build-release] version ${full} -> exe name "${pkg.build?.productName || 'Jetro'} ${full}.exe"`);
+  console.log(`[build-release] version ${full} -> portable "${pkg.build?.productName || 'Jetro'}.exe" + installer "${pkg.build?.productName || 'Jetro'} Setup.exe"`);
   const r = spawnSync(cmd, args, {
     stdio: 'inherit',
     shell: process.platform === 'win32',

@@ -1,6 +1,7 @@
 /* Jetro styles — split by area. Order matters (same cascade as the old single file). */
 @import './styles/fonts.css';
 @import './styles/tokens.css';
+@import './styles/themes.css';
 @import './styles/base.css';
 @import './styles/sidebar.css';
 @import './styles/topbar.css';

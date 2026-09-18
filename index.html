@@ -17,20 +17,38 @@
       // Apply the glass theme before first paint (no light flash in dark mode).
       try {
         var t = localStorage.getItem('jetro-theme') || 'system';
-        if (t !== 'light' && t !== 'dark') t = 'system';
-        var dark = t === 'dark' || (t === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-        document.documentElement.style.background = dark ? '#080f20' : '#ffffff';
+        var valid = { jetro: 1, midnight: 1, system: 1, gray: 1, silver: 1, crimson: 1, coral: 1, amber: 1, teal: 1, navy: 1, turquoise: 1, indigo: 1, aqua: 1, nord: 1, dracula: 1, solarized: 1, forest: 1, blossom: 1, espresso: 1, lavender: 1, ember: 1, pistachio: 1, ruby: 1, scarlet: 1, gold: 1, hunter: 1, clover: 1 };
+        // Legacy ids from before the brand rename (light->jetro, dark->midnight).
+        if (t === 'light') t = 'jetro';
+        else if (t === 'dark') t = 'midnight';
+        if (!valid[t]) t = 'system';
+        var darkBases = { midnight: 1, gray: 1, crimson: 1, teal: 1, navy: 1, indigo: 1, nord: 1, dracula: 1, forest: 1, espresso: 1, ember: 1, ruby: 1, hunter: 1 };
+        var dark, dataTheme;
+        if (t === 'system') {
+          dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          dataTheme = dark ? 'midnight' : 'jetro';
+        } else {
+          dark = !!darkBases[t];
+          dataTheme = t;
+        }
+        var bgColors = { jetro: '#ffffff', midnight: '#060b16', gray: '#14171e', silver: '#f4f6f9', crimson: '#160a12', coral: '#fff7f2', amber: '#fffdf5', teal: '#062a2a', navy: '#0a1633', turquoise: '#f0fdfa', indigo: '#12102e', aqua: '#f0f9ff', nord: '#242933', dracula: '#1a1b26', solarized: '#fefcf5', forest: '#0b1f16', blossom: '#fff5f7', espresso: '#1a130e', lavender: '#f5f3ff', ember: '#220f06', pistachio: '#f7fee7', ruby: '#1d0808', scarlet: '#fff5f5', gold: '#fefce8', hunter: '#060f0a', clover: '#f0fdf4' };
+        var bg = bgColors[dataTheme] || (dark ? '#080f20' : '#ffffff');
+        document.documentElement.setAttribute('data-theme', dataTheme);
+        document.documentElement.style.background = bg;
         var meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) meta.setAttribute('content', dark ? '#080f20' : '#f2f7fd');
-        // Apply the language direction before first paint (no LTR flash in Persian).
-        var lang = localStorage.getItem('jetro-lang') === 'fa' ? 'fa' : 'en';
-        document.documentElement.lang = lang;
-        document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
+        if (meta) meta.setAttribute('content', bg);
+        // Apply the language direction before first paint (no LTR flash in RTL languages).
+        // Keep in sync with src/locale/languages.ts (LANGUAGE_MAP + RTL_SET).
+        var validLangs = { en: 'en-US', fa: 'fa-IR', ar: 'ar-SA', tr: 'tr-TR', fr: 'fr-FR', de: 'de-DE', es: 'es-ES', ru: 'ru-RU', zh: 'zh-CN', hi: 'hi-IN', pt: 'pt-PT', it: 'it-IT', nl: 'nl-NL', ja: 'ja-JP', ko: 'ko-KR', ur: 'ur-PK', id: 'id-ID', pl: 'pl-PL', uk: 'uk-UA', vi: 'vi-VN', zhTW: 'zh-TW', he: 'he-IL', ku: 'ckb-IQ', az: 'az-AZ', bn: 'bn-BD', ta: 'ta-IN', te: 'te-IN', th: 'th-TH', ms: 'ms-MY', tl: 'fil-PH', sv: 'sv-SE', no: 'nb-NO', da: 'da-DK', fi: 'fi-FI', el: 'el-GR', hu: 'hu-HU', cs: 'cs-CZ', ro: 'ro-RO', ptBR: 'pt-BR', es419: 'es-419' };
+        var rtlLangs = { fa: 1, ar: 1, ur: 1, he: 1, ku: 1 };
+        var lang = localStorage.getItem('jetro-lang') || 'en';
+        if (!validLangs[lang]) lang = 'en';
+        document.documentElement.lang = validLangs[lang];
+        document.documentElement.dir = rtlLangs[lang] ? 'rtl' : 'ltr';
       } catch (e) {}
     </script>
     <style>
-      html[data-theme="dark"] body { background: #060b16; }
+      html[data-theme="midnight"] body { background: #060b16; }
     </style>
   </head>
   <body>

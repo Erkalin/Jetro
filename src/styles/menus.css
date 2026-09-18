@@ -12,8 +12,8 @@
   backdrop-filter: blur(20px);
   padding: 6px;
 }
-/* Persian menu labels run longer — widen the menu so items stay on one line. */
-html[lang='fa'] .ctx-menu {
+/* RTL menu labels run longer — widen the menu so items stay on one line. */
+html[dir='rtl'] .ctx-menu {
   min-width: 280px; max-width: min(390px, 94vw);
 }
 .ctx-item {
@@ -40,7 +40,7 @@ html[lang='fa'] .ctx-menu {
 .ctx-hint { padding: 6px 12px; font-size: 12px; color: var(--muted); }
 /* download item menu: wider, scrollable, filename header + queue picker */
 .ctx-menu-item { min-width: 290px; max-width: min(360px, 92vw); max-height: min(calc(100vh - 16px), 70vh, 560px); overflow-y: auto; }
-html[lang='fa'] .ctx-menu-item { min-width: 310px; max-width: min(390px, 94vw); }
+html[dir='rtl'] .ctx-menu-item { min-width: 310px; max-width: min(390px, 94vw); }
 .ctx-filename {
   font-weight: 800;
   color: var(--text);
@@ -76,8 +76,8 @@ html[lang='fa'] .ctx-menu-item { min-width: 310px; max-width: min(390px, 94vw); 
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   outline: none;
 }
-/* Persian queue names + "+ صف جدید…" need a touch more room. */
-html[lang='fa'] .queue-select {
+/* RTL queue names + "+ صف جدید…" need a touch more room. */
+html[dir='rtl'] .queue-select {
   min-width: 150px;
   max-width: 240px;
   font-size: 12px;

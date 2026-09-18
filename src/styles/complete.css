@@ -16,7 +16,7 @@
     radial-gradient(280px 120px at 50% 0%, rgba(25,118,210,0.14), transparent 70%);
   pointer-events: none;
 }
-[data-theme="dark"] .complete-glow {
+[data-theme="midnight"] .complete-glow {
   background:
     radial-gradient(220px 110px at 50% 0%, rgba(74,222,128,0.2), transparent 70%),
     radial-gradient(280px 120px at 50% 0%, rgba(96,165,250,0.16), transparent 70%);
@@ -50,7 +50,7 @@
   box-shadow: 0 10px 30px rgba(22,163,74,0.45), 0 0 0 8px rgba(22,163,74,0.1);
   position: relative;
 }
-[data-theme="dark"] .complete-icon {
+[data-theme="midnight"] .complete-icon {
   box-shadow: 0 10px 30px rgba(74,222,128,0.3), 0 0 0 8px rgba(74,222,128,0.1);
 }
 .complete-title { margin: 0; font-size: 20px; font-weight: 800; position: relative; }

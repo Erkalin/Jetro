@@ -1,4 +1,4 @@
-/* RTL overrides — applied when <html dir="rtl"> (Persian).
+/* RTL overrides — applied when <html dir="rtl"> (fa/ar/ku/ur/he share one logic).
    Flex/grid auto-flip with direction; these fix physical left/right rules. */
 [dir='rtl'] .ctx-menu,
 [dir='rtl'] .dropdown-menu {
@@ -43,7 +43,7 @@
   left: 12px;
 }
 
-/* Directory picker rows: swap folder button and text box in Persian
+/* Directory picker rows: swap folder button and text box in RTL
    (button goes right, text box left — un-flipped from RTL). */
 [dir='rtl'] .dir-row,
 [dir='rtl'] .save-path-box {
@@ -61,7 +61,63 @@
   text-align: center;
 }
 
-/* URLs, file paths and code stay LTR even in Persian. */
+/* Theme picker dropdown: proper RTL — palette dots right, name right-aligned,
+   chevron/check left. (Options reuse .ctx-item which hardcodes text-align: left.) */
+[dir='rtl'] .theme-picker-btn,
+[dir='rtl'] .theme-option {
+  direction: rtl;
+  text-align: right;
+}
+
+[dir='rtl'] .theme-picker-name,
+[dir='rtl'] .theme-option-name {
+  text-align: right;
+}
+
+/* Main downloads list stays LTR in every language (both card view and
+   detailed view): column order, icons, progress and actions are not mirrored
+   for Persian / Arabic / Kurdish / Urdu or any other RTL language. */
+[dir='rtl'] .list,
+[dir='rtl'] .list .card,
+[dir='rtl'] .list .details-wrap,
+[dir='rtl'] .list .details-head,
+[dir='rtl'] .list .details-body,
+[dir='rtl'] .list .details-row,
+[dir='rtl'] .list .download-card {
+  direction: ltr;
+  text-align: left;
+}
+
+/* Detailed-view column headers and item cells stay centered in every language. */
+[dir='rtl'] .list .details-th,
+[dir='rtl'] .list .details-th-label,
+[dir='rtl'] .list .details-td {
+  direction: ltr;
+  text-align: center;
+  justify-content: center;
+}
+
+/* Inside the LTR list, restore the LTR geometry that the generic RTL
+   overrides below would otherwise flip. */
+[dir='rtl'] .list .details-resizer {
+  right: 0;
+  left: auto;
+  margin-right: -5px;
+  margin-left: 0;
+}
+
+[dir='rtl'] .list .details-actions {
+  padding: 6px 4px;
+  justify-content: center;
+}
+
+/* Download cards in card view stay LTR even in RTL. */
+[dir='rtl'] .download-card {
+  direction: ltr;
+  text-align: left;
+}
+
+/* URLs, file paths and code stay LTR even in RTL. */
 [dir='rtl'] .card-url,
 [dir='rtl'] .batch-row-url,
 [dir='rtl'] .analytics-url,
@@ -72,7 +128,7 @@
   text-align: left;
 }
 
-/* Measurements stay LTR even in Persian — otherwise "201 KB/s"
+/* Measurements stay LTR even in RTL — otherwise "201 KB/s"
    reorders to "KB/s 201". Alignment is preserved where it matters. */
 [dir='rtl'] .analytics-tile-value,
 [dir='rtl'] .analytics-progress-meta span,
@@ -87,6 +143,6 @@
 [dir='rtl'] .details-td.details-num {
   direction: ltr;
   unicode-bidi: embed;
-  justify-content: flex-end;
-  text-align: right;
+  justify-content: center;
+  text-align: center;
 }

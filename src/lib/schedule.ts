@@ -3,17 +3,9 @@ import { en } from '@/locale/en';
 import type { AppStrings } from '@/locale/en';
 
 // ---------- Queue schedules: strict 24-hour HH:MM ----------
-export const TIME_24H_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const TIME_24H_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 export const QUEUE_SCHED_DEFAULT_START = '22:00';
 export const QUEUE_SCHED_DEFAULT_STOP = '07:00';
-
-export const QUEUE_POWER_OPTIONS: { value: QueuePowerAction; label: string }[] = [
-  { value: 'nothing', label: 'Do nothing' },
-  { value: 'sleep', label: 'Sleep' },
-  { value: 'hibernate', label: 'Hibernate' },
-  { value: 'shutdown', label: 'Shutdown' },
-  { value: 'restart', label: 'Restart' },
-];
 
 /** Localized power-action options for dropdowns (labels from the active language). */
 export function queuePowerOptions(p: AppStrings['power'] = en.power): { value: QueuePowerAction; label: string }[] {

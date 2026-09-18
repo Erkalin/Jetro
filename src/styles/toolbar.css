@@ -24,8 +24,8 @@
   padding: 6px;
   backdrop-filter: blur(20px);
 }
-/* Persian queue names + " (در حال اجرا)" suffix run longer — give the menu more room. */
-html[lang='fa'] .dropdown-menu {
+/* RTL queue names + " (در حال اجرا)" suffix run longer — give the menu more room. */
+html[dir='rtl'] .dropdown-menu {
   min-width: 280px; max-width: min(380px, 92vw);
 }
 .dropdown-empty { padding: 9px 12px; font-size: 13px; color: var(--muted); }

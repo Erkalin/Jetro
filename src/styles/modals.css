@@ -21,14 +21,14 @@ select.input {
 [dir='rtl'] select.input {
   background-position: left 10px center;
 }
-[data-theme="dark"] select.input {
+[data-theme="midnight"] select.input {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 select.input {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 /* ---- Native dropdown sizes: compact values must not stretch, long queue
-   names must not squeeze. Tuned for both English and Persian. ---- */
+   names must not squeeze. Tuned for both English and RTL. ---- */
 /* Short fixed values: "8 connections" / "۸ اتصال", "Unlimited", power actions. */
 select.input.select-conns {
   flex: 0 1 180px;
@@ -37,7 +37,7 @@ select.input.select-conns {
   max-width: 210px;
   margin-bottom: 0;
 }
-html[lang='fa'] select.input.select-conns {
+html[dir='rtl'] select.input.select-conns {
   flex-basis: 150px;
   min-width: 138px;
   max-width: 180px;
@@ -50,7 +50,7 @@ select.input.select-queue {
   min-width: 210px;
   margin-bottom: 0;
 }
-html[lang='fa'] select.input.select-queue {
+html[dir='rtl'] select.input.select-queue {
   flex-basis: 250px;
   min-width: 230px;
 }
@@ -62,7 +62,7 @@ select.input.select-single {
   max-width: 260px;
   margin-bottom: 0;
 }
-html[lang='fa'] select.input.select-single {
+html[dir='rtl'] select.input.select-single {
   min-width: 180px;
   max-width: 280px;
 }
@@ -72,7 +72,7 @@ html[lang='fa'] select.input.select-single {
 .proxy-type-wrap { flex: 0 1 140px; min-width: 124px; }
 .proxy-host-wrap { flex: 1 1 220px; min-width: 180px; }
 .proxy-port-wrap { flex: 0 1 120px; min-width: 104px; }
-html[lang='fa'] .proxy-type-wrap { flex-basis: 130px; min-width: 116px; }
+html[dir='rtl'] .proxy-type-wrap { flex-basis: 130px; min-width: 116px; }
 .queue-select option { background: var(--surface-solid); color: var(--text); }
 .row { display: flex; gap: 10px; }
 /* New Download modal footer: Download + Cancel side-by-side, equal size */
@@ -117,6 +117,6 @@ html[lang='fa'] .proxy-type-wrap { flex-basis: 130px; min-width: 116px; }
 .nav-add-btn:hover { background: var(--surface-solid); box-shadow: var(--lift-shadow); }
 .queue-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot-idle); flex-shrink: 0; }
 .queue-dot.running { background: var(--green); box-shadow: 0 0 8px rgba(22,163,74,0.7); animation: pulse 1.6s infinite; }
-[data-theme="dark"] .queue-dot.running { box-shadow: 0 0 8px rgba(74,222,128,0.8); }
+[data-theme="midnight"] .queue-dot.running { box-shadow: 0 0 8px rgba(74,222,128,0.8); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 .nav-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -3,16 +3,16 @@
 // would push them outside the window. Clamp the anchor so the menu (at its
 // tallest scrollable size) always fits, then CSS max-height + overflow-y keeps
 // any taller content scrollable instead of clipped.
-export const CTX_MARGIN = 8;
+const CTX_MARGIN = 8;
 
-export function ctxCssMaxHeight(itemMenu: boolean): number {
+function ctxCssMaxHeight(itemMenu: boolean): number {
   if (typeof window === 'undefined') return 560;
   const vhCap = window.innerHeight - CTX_MARGIN * 2;
   if (itemMenu) return Math.max(120, Math.min(560, window.innerHeight * 0.7, vhCap));
   return Math.max(120, Math.min(560, vhCap));
 }
 
-export function clampCtxPos(clientX: number, clientY: number, w: number, h: number): { x: number; y: number } {
+function clampCtxPos(clientX: number, clientY: number, w: number, h: number): { x: number; y: number } {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const cw = Math.min(w, Math.max(120, vw - CTX_MARGIN * 2));
@@ -41,10 +41,11 @@ export function keepCtxMenuInViewport(el: HTMLElement | null) {
   }
 }
 
-// Estimated menu widths (px), matching styles/menus.css: the queue menu sizes
-// to content (~230px); the item menu has min-width 264px (.ctx-menu-item).
-const CTX_QUEUE_MENU_W = 230;
-const CTX_ITEM_MENU_W = 264;
+// Estimated menu widths (px), matching styles/menus.css RTL (Persian) sizes so
+// every RTL language (fa/ar/ku/ur/he) anchors with the same logic: the queue
+// menu min-width is 280px and the item menu min-width is 310px in RTL.
+const CTX_QUEUE_MENU_W = 280;
+const CTX_ITEM_MENU_W = 310;
 
 /** Clamped viewport position for opening a menu at a right-click event. */
 export function menuAnchor(e: { clientX: number; clientY: number }, itemMenu: boolean): { x: number; y: number } {

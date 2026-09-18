@@ -16,7 +16,7 @@ import type { SpeedSample } from '@/hooks/useSpeedHistory';
 export const SPEED_HISTORY_KEY = 'jetro-speed-history-v1';
 // Persisted resolution cap per download: full 1Hz samples stay in memory
 // (up to 3h), disk keeps a strided subset covering the same window.
-export const SPEED_HISTORY_STORE_CAP = 1500;
+const SPEED_HISTORY_STORE_CAP = 1500;
 
 interface StoredEntry {
   /** [t, bps, done] triples — compact for localStorage. */

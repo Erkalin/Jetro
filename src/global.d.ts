@@ -54,8 +54,6 @@ declare global {
     version: string | null;
     ffmpeg: string | null;
     ffmpegPath: string;
-    ffprobe: string | null;
-    ffprobePath: string;
     quickjs: string | null;
     quickjsPath: string | null;
     userPath: string;
@@ -103,6 +101,7 @@ interface JetroAPI {
   list: () => Promise<any[]>;
   getSegments: (id: string) => Promise<DownloadSegmentsInfo | null>;
   getSettings: () => Promise<any>;
+  isPortable: () => Promise<boolean>;
   saveSettings: (s: any) => Promise<any>;
   pickFolder: (defaultPath?: string) => Promise<string | null>;
   pickFile: () => Promise<string | null>;

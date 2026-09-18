@@ -1,8 +1,8 @@
 {
   "name": "jetro",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Jetro",
-  "author": "Erkalin",
+  "author": "Eravey",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,12 +16,13 @@
   "build": {
     "appId": "com.jetrodl.app",
     "productName": "Jetro",
-    "artifactName": "${productName} ${version}.${ext}",
+    "artifactName": "${productName}.${ext}",
     "asar": true,
     "compression": "maximum",
     "directories": {
       "output": "release"
     },
+    "afterPack": "dist-scripts/scripts/after-pack.js",
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
@@ -46,10 +47,6 @@
         "to": "bin/ffmpeg.exe"
       },
       {
-        "from": "bin/ffprobe.exe",
-        "to": "bin/ffprobe.exe"
-      },
-      {
         "from": "bin/quickjs.exe",
         "to": "bin/quickjs.exe"
       }
@@ -62,9 +59,24 @@
     ],
     "win": {
       "target": [
-        "portable"
+        "portable",
+        "nsis"
       ],
       "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "artifactName": "${productName} Setup.${ext}",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "include": "build/installer.nsh",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Jetro",
+      "uninstallDisplayName": "Jetro",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
     }
   },
   "scripts": {

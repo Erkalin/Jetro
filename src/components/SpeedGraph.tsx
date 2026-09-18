@@ -93,7 +93,7 @@ function relLabel(t1: number, t: number, nowLabel = 'now'): string {
   return `-${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`;
 }
 
-export type SpeedRangeId = '1m' | '5m' | '15m' | '30m' | '1h' | '2h' | 'all';
+type SpeedRangeId = '1m' | '5m' | '15m' | '30m' | '1h' | '2h' | 'all';
 
 const SPEED_RANGES: { id: SpeedRangeId; ms: number | null }[] = [
   { id: '1m', ms: 60_000 },

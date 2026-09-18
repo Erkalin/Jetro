@@ -1,6 +1,6 @@
 /* Language-switch micro-animation — pure CSS, no dependencies.
    The `lang-switch` class is toggled on <html> for ~450ms by
-   LanguageContext whenever EN <-> FA changes (never on first mount). */
+   LanguageContext whenever the language changes (never on first mount). */
 
 @keyframes lang-fade-rise {
   from {
@@ -66,11 +66,13 @@ html.lang-switch .modal {
 .lang-segment[data-active='en']::before {
   transform: translateX(0);
 }
-.lang-segment[data-active='fa']::before {
+/* Any non-English selection shares the Persian thumb position (legacy EN/FA
+   toggle generalized so ar/ku/ur/he behave identically). */
+.lang-segment[data-active]:not([data-active='en'])::before {
   transform: translateX(calc(100% + 6px));
 }
 /* In RTL the visual order flips (EN sits right), so glide the other way. */
-[dir='rtl'] .lang-segment[data-active='fa']::before {
+[dir='rtl'] .lang-segment[data-active]:not([data-active='en'])::before {
   transform: translateX(calc(-100% - 6px));
 }
 

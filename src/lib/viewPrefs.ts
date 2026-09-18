@@ -7,16 +7,6 @@ export const DETAIL_COLS_DEFAULT: DetailColId[] = ['name', 'status', 'size', 'sp
 // one-time migration of untouched layouts in readDetailLayout below.
 const DETAIL_COLS_PREVIOUS_DEFAULT: DetailColId[] = ['name', 'queue', 'status', 'size', 'speed', 'eta', 'lastTry'];
 
-export const DETAIL_COL_LABELS: Record<DetailColId, string> = {
-  name: 'File Name',
-  queue: 'Queue',
-  status: 'Progress',
-  size: 'Size',
-  speed: 'Download Speed',
-  eta: 'ETA',
-  lastTry: 'Last Try',
-};
-
 export const DETAIL_WIDTHS_DEFAULT: Record<DetailColId, number> = {
   name: 260,
   queue: 180,

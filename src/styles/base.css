@@ -14,11 +14,13 @@ button, input, select, textarea {
 }
 ::selection { background: var(--accent-soft-border); }
 
-/* Persian needs a taller line-height; inputs keep Latin metrics for URLs. */
-html[lang='fa'] {
+/* Arabic-script languages (Persian/Arabic/Urdu/Kurdish Sorani) need Iranyekan +
+   a taller line-height; inputs keep Latin metrics for URLs. Kurdish ships as
+   ckb-IQ (ku: defensive) — same logic and size as Persian. */
+html[lang^='fa'], html[lang^='ar'], html[lang^='ur'], html[lang^='ckb'], html[lang^='ku'] {
   --font-main: 'Iranyekan', 'Comfortaa', 'Segoe UI', system-ui, sans-serif;
 }
-html[lang='fa'] body {
+html[lang^='fa'] body, html[lang^='ar'] body, html[lang^='ur'] body, html[lang^='ckb'] body, html[lang^='ku'] body {
   line-height: 1.8;
   letter-spacing: 0;
 }

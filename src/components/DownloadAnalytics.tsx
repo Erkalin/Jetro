@@ -174,7 +174,7 @@ export default function DownloadAnalytics({ item, queueName, stats, onClose }: P
               ? fmtBytes(total)
               : `${fmtBytes(item.downloadedBytes || 0)} / ${fmtSize(total, !!item.totalBytesIsEstimate)}`}
           </span>
-          <span>{active ? `${fmtSpeed(item.speedBps || 0)} • ${t.analytics.etaPrefix}${stableEta}` : statusLabel(item.status, t.status)}</span>
+          <span>{statusLabel(item.status, t.status)}</span>
         </div>
 
         {(pausable || resumable) && (

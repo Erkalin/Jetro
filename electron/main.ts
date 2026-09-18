@@ -13,8 +13,8 @@ import {
   shouldBypassHostname,
   type NetworkSettings,
 } from './proxy';
-import { execFile, spawn, type ChildProcess } from 'child_process';
-import { resolveYtDlp, getYtDlpVersion, updateYtDlp, bundledYtDlpPath, userYtDlpPath, ffmpegDir, envWithBinPath, getFfmpegVersion, getQuickjsVersion, resolveFfmpeg, resolveFfprobe, resolveQuickjs } from './binaries';
+import { execFile, execFileSync, spawn, type ChildProcess } from 'child_process';
+import { resolveYtDlp, getYtDlpVersion, updateYtDlp, ensureWritableYtDlp, consolidateYtDlpAfterUpdate, reconcileBinaries, bundledYtDlpPath, userYtDlpPath, ffmpegDir, envWithBinPath, getFfmpegVersion, getQuickjsVersion, resolveFfmpeg, resolveQuickjs } from './binaries';
 
 
 interface Item {
@@ -89,17 +89,37 @@ let queues: Queue[] = [];
 let runners = new Map<string, SegmentedDownload>();
 /** Active yt-dlp merge processes (video downloads) + their progress timers. */
 let ytJobs = new Map<string, { proc: ChildProcess; timer: NodeJS.Timeout; lastBytes: number; lastTick: number }>();
-type ThemeChoice = 'light' | 'dark' | 'system';
+type ThemeChoice = 'jetro' | 'midnight' | 'system' | 'gray' | 'silver' | 'crimson' | 'coral' | 'amber' | 'teal' | 'navy' | 'turquoise' | 'indigo' | 'aqua' | 'nord' | 'dracula' | 'solarized' | 'forest' | 'blossom' | 'espresso' | 'lavender' | 'ember' | 'pistachio' | 'ruby' | 'scarlet' | 'gold' | 'hunter' | 'clover';
+const THEME_IDS: ThemeChoice[] = ['jetro', 'midnight', 'system', 'gray', 'silver', 'crimson', 'coral', 'amber', 'teal', 'navy', 'turquoise', 'indigo', 'aqua', 'nord', 'dracula', 'solarized', 'forest', 'blossom', 'espresso', 'lavender', 'ember', 'pistachio', 'ruby', 'scarlet', 'gold', 'hunter', 'clover'];
+/** Legacy ids from before the brand rename (light->jetro, dark->midnight). */
+const LEGACY_THEMES: Record<string, ThemeChoice> = { light: 'jetro', dark: 'midnight' };
 function normalizeTheme(v: any): ThemeChoice {
-  return v === 'light' || v === 'dark' || v === 'system' ? v : 'system';
+  if (typeof v === 'string') {
+    if ((THEME_IDS as string[]).includes(v)) return v as ThemeChoice;
+    if (v in LEGACY_THEMES) return LEGACY_THEMES[v];
+  }
+  return 'system';
 }
+/** Themes rendered on a dark background (drives native chrome + window bg). */
+const DARK_BASE_THEMES: ReadonlySet<string> = new Set(['midnight', 'gray', 'crimson', 'teal', 'navy', 'indigo', 'nord', 'dracula', 'forest', 'espresso', 'ember', 'ruby', 'hunter']);
+/** Splash background per theme so the window paints the right color instantly. */
+const THEME_BG: Record<string, string> = {
+  jetro: '#ffffff', midnight: '#060b16', gray: '#14171e', silver: '#f4f6f9',
+  crimson: '#160a12', coral: '#fff7f2', amber: '#fffdf5',
+  teal: '#062a2a', navy: '#0a1633', turquoise: '#f0fdfa', indigo: '#12102e', aqua: '#f0f9ff',
+  nord: '#242933', dracula: '#1a1b26', solarized: '#fefcf5',
+  forest: '#0b1f16', blossom: '#fff5f7', espresso: '#1a130e',
+  lavender: '#f5f3ff', ember: '#220f06', pistachio: '#f7fee7',
+  ruby: '#1d0808', scarlet: '#fff5f5', gold: '#fefce8', hunter: '#060f0a', clover: '#f0fdf4',
+};
 /** Keep the native chrome (scrollbars, dialogs, titlebar) + window bg in sync with the glass theme. */
 function applyNativeTheme() {
   try {
     const choice = normalizeTheme((settings as any).theme);
-    nativeTheme.themeSource = choice;
-    const dark = choice === 'dark' || (choice === 'system' && nativeTheme.shouldUseDarkColors);
-    try { win?.setBackgroundColor(dark ? '#080f20' : '#ffffff'); } catch {}
+    // Electron only understands light/dark/system — map custom themes to their base.
+    const dark = choice === 'system' ? nativeTheme.shouldUseDarkColors : DARK_BASE_THEMES.has(choice);
+    try { nativeTheme.themeSource = choice === 'system' ? 'system' : (dark ? 'dark' : 'light'); } catch {}
+    try { win?.setBackgroundColor(THEME_BG[choice] || (dark ? '#080f20' : '#ffffff')); } catch {}
   } catch {}
 }
 let settings: {
@@ -110,7 +130,7 @@ let settings: {
   autoCaptureClipboard: boolean;
   /** X-button behavior: ask every time, minimize to tray, or exit. */
   closeAction: 'ask' | 'minimize' | 'exit';
-  /** Glass theme: light / dark / follow the OS. */
+  /** Glass theme: jetro / midnight / follow the OS. */
   theme: ThemeChoice;
   /** Auto-retry failed downloads with backoff. */
   autoRetryEnabled: boolean;
@@ -118,6 +138,8 @@ let settings: {
   retryDelaySec: number;
   /** Check GitHub releases on startup. */
   checkUpdatesOnStart: boolean;
+  /** Launch at OS startup (installable version only; ignored for portable). */
+  launchAtStartup: boolean;
 } & NetworkSettings = {
   maxConnections: 8,
   maxConcurrentDownloads: 3,
@@ -130,6 +152,7 @@ let settings: {
   maxRetries: 3,
   retryDelaySec: 5,
   checkUpdatesOnStart: true,
+  launchAtStartup: false,
   ...defaultNetworkSettings(),
 };
 // Factory defaults snapshot (taken before loadAll merges the saved file).
@@ -144,6 +167,161 @@ function normalizeRetrySettings(s: any) {
   (s as any).maxRetries = Number.isFinite(maxR) ? maxR : 3;
   (s as any).retryDelaySec = Number.isFinite(delay) ? delay : 5;
   (s as any).checkUpdatesOnStart = (s as any)?.checkUpdatesOnStart !== false;
+  (s as any).launchAtStartup = (s as any)?.launchAtStartup === true;
+}
+
+/** True when running from the portable exe (no installer, exe may move). */
+function isPortableApp(): boolean {
+  try {
+    const env: any = (process as any)?.env || {};
+    // electron-builder portable wrapper sets these when running portable.
+    if (env.PORTABLE_EXECUTABLE_DIR || env.PORTABLE_EXECUTABLE_FILE || env.PORTABLE_APP_DIR) return true;
+  } catch {}
+  return false;
+}
+
+/** Stable login-item identity (Windows registry value name). Must never change — renaming it orphans the old entry on reinstall. */
+const LOGIN_ITEM_NAME = 'com.jetrodl.app';
+/** Value names Jetro may have registered under in the past (before the AppUserModelId was fixed). Swept on boot + uninstall. */
+const LEGACY_LOGIN_ITEM_NAMES = ['Jetro', 'jetro'];
+/** Args for OS login launch — ALWAYS passed identically on enable AND disable so Electron can match/remove the same entry. */
+const LOGIN_ITEM_ARGS = ['--startup-minimized'];
+
+/** Extract the exe path from a Run-key data string (handles `"C:\a\b.exe" --flag` and bare `C:\a\b.exe --flag`). */
+function normalizeRunExe(p: string): string {
+  try {
+    let s = String(p || '').trim();
+    if (!s) return '';
+    if (s.startsWith('"')) {
+      const end = s.indexOf('"', 1);
+      if (end > 1) s = s.slice(1, end);
+    } else {
+      const m = s.match(/^(.+?\.exe)\b/i);
+      s = m ? m[1] : s.split(/\s+/)[0];
+    }
+    return s.replace(/\//g, '\\').toLowerCase();
+  } catch { return ''; }
+}
+
+/** List all (name, data) values under a registry key. Returns [] on any error (missing key, reg.exe failure). */
+function queryRunKeyValues(key: string): Array<{ name: string; data: string }> {
+  try {
+    const out = String(execFileSync('reg', ['query', key], { windowsHide: true, encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] } as any) || '');
+    const vals: Array<{ name: string; data: string }> = [];
+    for (const line of out.split(/\r?\n/).slice(1)) {
+      if (!line.trim()) continue;
+      const m = line.match(/^\s+(.*?)\s+REG_(SZ|EXPAND_SZ|MULTI_SZ|BINARY|DWORD|QWORD)\s*([\s\S]*)$/i);
+      if (!m) continue;
+      vals.push({ name: (m[1] || '').trim(), data: (m[3] || '').trim() });
+    }
+    return vals;
+  } catch { return []; }
+}
+
+function deleteRunValue(key: string, name: string) {
+  try {
+    execFileSync('reg', ['delete', key, '/v', name, '/f'], { windowsHide: true, timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] } as any);
+  } catch {}
+}
+
+/**
+ * Delete orphaned Jetro login items left by previous installs (Windows only).
+ * Uninstall never ran `setLoginItemSettings({openAtLogin:false})`, so each
+ * install/uninstall cycle with "Launch at startup" on leaves a zombie Run
+ * value (+ its StartupApproved ghost in Task Manager). This collapses them
+ * back to at most the single live entry for the current exe.
+ */
+function cleanupStaleStartupEntries() {
+  try {
+    if (process.platform !== 'win32') return;
+    try { if (isPortableApp()) return; } catch {}
+    const RUN = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+    const APPROVED = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run';
+    const RUN_MACHINE = 'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+    const currentExe = normalizeRunExe(process.execPath);
+    const enable = (settings as any)?.launchAtStartup === true;
+    const known = new Set(LEGACY_LOGIN_ITEM_NAMES.map((n) => n.toLowerCase()));
+    const isJetroName = (n: string) => {
+      const s = String(n || '').toLowerCase();
+      return known.has(s) || s.includes('jetro');
+    };
+    const isJetroExe = (data: string) => {
+      try {
+        const exe = normalizeRunExe(data);
+        return (exe.split('\\').pop() || '') === 'jetro.exe';
+      } catch { return false; }
+    };
+    const runVals = queryRunKeyValues(RUN);
+    const liveExists = !!currentExe && runVals.some(
+      (r) => String(r.name || '').toLowerCase() === LOGIN_ITEM_NAME.toLowerCase() && normalizeRunExe(r.data) === currentExe,
+    );
+    // 1) HKCU Run: keep only the canonical live entry (when enabled); drop every other Jetro value.
+    for (const v of runVals) {
+      try {
+        if (!isJetroName(v.name) && !isJetroExe(v.data)) continue;
+        const isLive = enable && String(v.name || '').toLowerCase() === LOGIN_ITEM_NAME.toLowerCase() && !!currentExe && normalizeRunExe(v.data) === currentExe;
+        if (isLive) continue;
+        deleteRunValue(RUN, v.name);
+        deleteRunValue(APPROVED, v.name);
+      } catch {}
+    }
+    // 2) StartupApproved ghosts: Approval lingers after its Run value is gone and Task Manager keeps showing it.
+    for (const v of queryRunKeyValues(APPROVED)) {
+      try {
+        if (!isJetroName(v.name)) continue;
+        if (enable && String(v.name || '').toLowerCase() === LOGIN_ITEM_NAME.toLowerCase() && liveExists) continue;
+        deleteRunValue(APPROVED, v.name);
+      } catch {}
+    }
+    // 3) Machine scope (old per-machine installs / admin leftovers). The current install is per-user, so drop any Jetro value here.
+    for (const v of queryRunKeyValues(RUN_MACHINE)) {
+      try {
+        if (!isJetroName(v.name) && !isJetroExe(v.data)) continue;
+        deleteRunValue(RUN_MACHINE, v.name);
+      } catch {}
+    }
+  } catch {}
+}
+
+/** Reflect settings.launchAtStartup in the OS login item (installed builds only). */
+function applyLaunchAtStartup() {
+  try {
+    if (isPortableApp()) return;
+    const enable = (settings as any)?.launchAtStartup === true;
+    // First collapse zombies from previous installs so reinstalls can never stack entries.
+    try { cleanupStaleStartupEntries(); } catch {}
+    const opts: any = { openAtLogin: enable };
+    try {
+      if (process.platform === 'win32') {
+        opts.name = LOGIN_ITEM_NAME;
+        opts.path = process.execPath;
+        // Same args on enable AND disable — Electron needs the identical
+        // identity to find/remove the entry; the tray still starts minimized
+        // because the stored Run value keeps `--startup-minimized`.
+        opts.args = [...LOGIN_ITEM_ARGS];
+      } else if (process.platform === 'linux') {
+        opts.path = process.execPath;
+        opts.args = [...LOGIN_ITEM_ARGS];
+      } else if (process.platform === 'darwin') {
+        opts.openAsHidden = true;
+      }
+      app.setLoginItemSettings(opts);
+    } catch {}
+  } catch {}
+}
+
+/** True when this launch came from OS startup (login item). */
+function startedMinimized(): boolean {
+  try {
+    const argv = (process.argv || []).map((s) => String(s || '').toLowerCase());
+    if (argv.includes('--startup-minimized') || argv.includes('--hidden') || argv.includes('-m')) return true;
+  } catch {}
+  try {
+    // macOS "open at login (hidden)" handoff.
+    const li: any = (app as any)?.getLoginItemSettings?.();
+    if (li?.wasOpenedAtLogin && li?.wasOpenedAsHidden) return true;
+  } catch {}
+  return false;
 }
 
 function networkCfg(): NetworkSettings {
@@ -238,11 +416,14 @@ function loadAll() {
     // backfill app/tray defaults for old settings files
     (settings as any).closeAction = normalizeCloseAction((settings as any).closeAction);
     (settings as any).theme = normalizeTheme((settings as any).theme);
-    // the run-at-startup feature was removed: drop any stale saved flag
-    delete (settings as any).launchAtStartup;
+    // Run-at-startup only applies to the installed build: normalize the flag,
+    // force it off for portable, and reflect it in the OS login item.
+    (settings as any).launchAtStartup = (settings as any)?.launchAtStartup === true;
+    if (isPortableApp()) (settings as any).launchAtStartup = false;
     // a bare drive letter ("C:") is drive-relative and breaks mkdir — root it
     try { settings.downloadDir = normalizeDir(settings.downloadDir) || settings.downloadDir; } catch {}
     applyNativeTheme();
+    try { applyLaunchAtStartup(); } catch {}
   } catch {}
 }
 function saveAllSync() {
@@ -851,14 +1032,14 @@ function createWindow() {
   const icon = resolveAppIcon();
   if (!icon) console.warn('[jetro] app icon not found, using default');
   const themeChoice = normalizeTheme((settings as any).theme);
-  const startDark = themeChoice === 'dark' || (themeChoice === 'system' && nativeTheme.shouldUseDarkColors);
-  try { nativeTheme.themeSource = themeChoice; } catch {}
+  const startDark = themeChoice === 'system' ? nativeTheme.shouldUseDarkColors : DARK_BASE_THEMES.has(themeChoice);
+  try { nativeTheme.themeSource = themeChoice === 'system' ? 'system' : (startDark ? 'dark' : 'light'); } catch {}
   win = new BrowserWindow({
     width: 1180,
     height: 760,
     minWidth: 960,
     minHeight: 600,
-    backgroundColor: startDark ? '#080f20' : '#ffffff',
+    backgroundColor: THEME_BG[themeChoice] || (startDark ? '#080f20' : '#ffffff'),
     title: 'Jetro',
     autoHideMenuBar: true,
     show: false,
@@ -878,8 +1059,13 @@ function createWindow() {
   }
   win.once('ready-to-show', () => {
     try {
-      win?.show();
-      win?.focus();
+      // Launched from OS startup: stay in the tray, don't pop a window.
+      if (startedMinimized()) {
+        try { win?.hide(); } catch {}
+      } else {
+        win?.show();
+        win?.focus();
+      }
     } catch {}
     flushPendingExternalUrl();
   });
@@ -1328,6 +1514,9 @@ app.whenReady().then(() => {
   }
   Menu.setApplicationMenu(null);
   loadAll();
+  // Fold any legacy AppData binary duplicates back into resources/bin
+  // (keeps the newer yt-dlp, deletes the stale copy). Non-blocking.
+  try { reconcileBinaries().catch(() => {}); } catch {}
   // fix downloadDir default if missing
   try {
     fs.mkdirSync(settings.downloadDir, { recursive: true });
@@ -2170,6 +2359,7 @@ ipcMain.handle('queue:stop', async (_e, id: string) => {
   return q;
 });
 ipcMain.handle('settings:get', () => settings);
+ipcMain.handle('app:is-portable', () => isPortableApp());
 ipcMain.handle('settings:save', async (_e, s: any) => {
   settings = { ...settings, ...s, ...normalizeNetworkSettings({ ...settings, ...s }) };
   try { normalizeRetrySettings(settings); } catch {}
@@ -2181,8 +2371,11 @@ ipcMain.handle('settings:save', async (_e, s: any) => {
   delete (settings as any).extensionToken;
   delete (settings as any).lastExtensionSeenAt;
   delete (settings as any).hideExtensionNudge;
-  // the run-at-startup feature was removed: ignore any stale flag from old clients
-  delete (settings as any).launchAtStartup;
+  // Run-at-startup only applies to the installed build: ignore it from
+  // portable clients so the flag can never stick there.
+  (settings as any).launchAtStartup = (settings as any)?.launchAtStartup === true;
+  if (isPortableApp()) (settings as any).launchAtStartup = false;
+  try { applyLaunchAtStartup(); } catch {}
   // the global scheduler was removed: per-queue schedules only
   delete (settings as any).schedulerEnabled;
   delete (settings as any).schedulerStart;
@@ -2266,6 +2459,7 @@ ipcMain.handle('app:reset-all', async () => {
     fs.mkdirSync(settings.downloadDir, { recursive: true });
   } catch {}
   try { applyNativeTheme(); } catch {}
+  try { applyLaunchAtStartup(); } catch {}
   try { saveAllSync(); } catch {}
   broadcast(true);
   return { ok: true };
@@ -2306,7 +2500,7 @@ function compareVersions(a: string, b: string): number {
 }
 
 function getAppVersion(): string {
-  const FALLBACK = '1.0.0';
+  const FALLBACK = '1.1.0';
   try {
     const electronVer = String((process.versions as any)?.electron || '').trim();
     // package.json is authoritative — app.getVersion() returns the Electron
@@ -3415,24 +3609,12 @@ ipcMain.handle('binaries:status', async () => {
     getFfmpegVersion().catch(() => null),
     getQuickjsVersion().catch(() => null),
   ]);
-  let ffprobe: string | null = null;
-  try {
-    const fp = resolveFfprobe();
-    ffprobe = await new Promise<string | null>((res) => {
-      execFile(fp, ['-version'], { timeout: 8000 }, (err: any, out: any) => {
-        if (err) return res(null);
-        res(String(out || '').split('\n')[0].trim().slice(0, 80) || null);
-      });
-    });
-  } catch {}
   return {
     available: !!ytVersion,
     path: ytVersion ? candidate : null,
     version: ytVersion,
     ffmpeg: ffVersion,
     ffmpegPath: resolveFfmpeg(),
-    ffprobe,
-    ffprobePath: resolveFfprobe(),
     quickjs: qjsVersion,
     quickjsPath: resolveQuickjs(),
     userPath: userYtDlpPath(),
@@ -3441,7 +3623,11 @@ ipcMain.handle('binaries:status', async () => {
 });
 
 ipcMain.handle('binaries:update-ytdlp', async () => {
-  const bin = resolveYtDlp(String((settings as any).ytDlpPath || ''));
+  const bin = ensureWritableYtDlp(String((settings as any).ytDlpPath || ''));
   const r = await updateYtDlp(bin);
+  if ((r as any)?.ok) {
+    // Updated bundled in place: the legacy AppData copy is stale, drop it.
+    try { consolidateYtDlpAfterUpdate(bin); } catch {}
+  }
   return r;
 });
