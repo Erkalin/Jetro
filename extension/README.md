@@ -8,7 +8,7 @@
 to the desktop app in one click.**
 
 <p>
-  <img src="https://img.shields.io/badge/version-1.1.0-blue?style=for-the-badge" alt="Version" />
+  <img src="https://img.shields.io/badge/version-1.2.0-blue?style=for-the-badge" alt="Version" />
   <img src="https://img.shields.io/badge/Manifest-V3-47848F?style=for-the-badge" alt="Manifest V3" />
   <img src="https://img.shields.io/badge/Chrome_Edge_Brave_Opera-Vivaldi_supported-1a7f37?style=for-the-badge" alt="Chromium" />
   <img src="https://img.shields.io/badge/Firefox-compatible-FF7139?style=for-the-badge" alt="Firefox" />

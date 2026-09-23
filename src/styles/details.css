@@ -110,7 +110,7 @@
 .details-row .file-icon img { width: 18px; height: 18px; }
 .details-filename {
   flex: 1; min-width: 0;
-  font-weight: 600;
+  font-weight: 700;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   text-align: center;
 }

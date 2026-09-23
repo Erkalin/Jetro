@@ -1,5 +1,5 @@
 .toolbar {
-  display: flex; gap: 10px; align-items: center;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
   position: relative;
   z-index: 30;
   background: var(--glass-strong);
@@ -9,9 +9,12 @@
   backdrop-filter: blur(22px) saturate(1.4);
   -webkit-backdrop-filter: blur(22px) saturate(1.4);
   transition: background-color 0.25s ease, border-color 0.25s ease;
+  overflow: visible;
 }
-.toolbar-sep { width: 1px; align-self: stretch; background: var(--glass-border); margin: 2px 4px; }
-.toolbar-dropdown { position: relative; }
+/* keep action buttons compact; bar wraps on narrow screens so dropdowns can overflow outside */
+.toolbar .btn { height: 36px; padding-top: 0; padding-bottom: 0; padding-left: 12px; padding-right: 12px; font-size: 12.5px; white-space: nowrap; flex-shrink: 0; }
+.toolbar-sep { width: 1px; align-self: stretch; background: var(--glass-border); margin: 2px 4px; flex-shrink: 0; }
+.toolbar-dropdown { position: relative; flex-shrink: 0; }
 .dropdown-backdrop { position: fixed; inset: 0; z-index: 40; }
 .dropdown-menu {
   position: absolute; top: calc(100% + 8px); left: 0; z-index: 41;
@@ -29,14 +32,28 @@ html[dir='rtl'] .dropdown-menu {
   min-width: 280px; max-width: min(380px, 92vw);
 }
 .dropdown-empty { padding: 9px 12px; font-size: 13px; color: var(--muted); }
+/* queue name inside start/stop dropdown entries: truncates so the file-count
+   badge (.nav-count, pushed right with auto margins incl. RTL) always fits */
+.dropdown-queue-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .toolbar-spacer { flex: 1; }
+/* right-hand display options stay together on one line */
+.toolbar-right {
+  display: flex; align-items: center; gap: 8px;
+  margin-left: auto; flex-shrink: 0;
+}
 /* card/details view toggle */
 .view-toggle {
   display: flex; gap: 4px;
+  box-sizing: border-box; height: 36px;
   background: var(--hover-bg);
   border: 1px solid var(--glass-border);
   border-radius: 12px;
-  padding: 3px;
+  padding: 2px;
+  flex-shrink: 0;
 }
 .view-toggle-btn {
   width: 32px; height: 30px;
@@ -52,4 +69,41 @@ html[dir='rtl'] .dropdown-menu {
   color: var(--text);
   box-shadow: var(--icon-shadow);
 }
+/* downloads per-page selector (grouped with the view toggle) */
+.page-size-wrap {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted);
+  white-space: nowrap;
+}
+/* per-page dropdown — styled like a toolbar button so it sits flush */
+select.input.page-size-select {
+  appearance: none; -webkit-appearance: none;
+  box-sizing: border-box; height: 36px; width: auto; min-width: 76px;
+  padding: 0 28px 0 12px;
+  background-color: var(--surface);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  color: var(--text);
+  font-family: var(--font-main);
+  font-size: 12.5px; font-weight: 700; line-height: 1;
+  margin-bottom: 0; flex-shrink: 0;
+  text-align: center; text-align-last: center;
+  cursor: pointer;
+}
+html[dir='rtl'] select.input.page-size-select { padding: 0 12px 0 28px; }
+select.input.page-size-select option { text-align: center; }
+/* pagination footer under the downloads list */
+.pagination {
+  display: flex; align-items: center; justify-content: center;
+  gap: 10px; flex-wrap: wrap;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px; padding: 8px 12px;
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.pagination .queue-meta { width: 100%; text-align: center; }
+.pagination-pages { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: wrap; margin: 0 auto; }
+.page-btn { min-width: 32px; }
+.pagination-ellipsis { color: var(--muted); padding: 0 2px; user-select: none; }
 

@@ -29,7 +29,7 @@
 .progress-fill { height: 100%; background: linear-gradient(90deg, var(--green), var(--green-light)); border-radius: 20px; transition: width 0.1s linear; box-shadow: 0 0 12px rgba(22,163,74,0.45); }
 [data-theme="midnight"] .progress-fill { box-shadow: 0 0 12px rgba(74,222,128,0.4); }
 .meta { display: flex; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; align-items: center; }
-.badge { background: var(--accent-soft-bg); border: 1px solid var(--accent-soft-border); padding: 1px 8px; border-radius: 20px; font-size: 11px; color: var(--accent-strong); font-weight: 600; }
+.badge { background: var(--accent-soft-bg); border: 1px solid var(--accent-soft-border); padding: 1px 8px; border-radius: 20px; font-size: 11px; color: var(--accent-strong); font-weight: 700; }
 .badge.green { background: var(--green-soft-bg); border-color: var(--green-soft-border); color: var(--green); }
 .badge.red { background: var(--red-soft-bg); border-color: var(--red-soft-border); color: var(--red); }
 .actions { display: flex; gap: 6px; flex-shrink: 0; }

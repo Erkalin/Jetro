@@ -11,6 +11,16 @@ interface QueueItem {
   createdAt: number;
   afterComplete?: QueuePowerAction;
   powerFiredAt?: number | null;
+  startOnStartup?: boolean;
+  startAtEnabled?: boolean;
+  stopAtEnabled?: boolean;
+  scheduleMode?: 'once' | 'daily';
+  onceDate?: string;
+  weekdays?: boolean[];
+  retriesPerFile?: number | null;
+  openWhenDone?: string;
+  exitAppWhenDone?: boolean;
+  forceTerminate?: boolean;
 }
 
 declare global {
@@ -120,6 +130,7 @@ interface JetroAPI {
   listQueues: () => Promise<QueueItem[]>;
   createQueue: (name?: string) => Promise<QueueItem>;
   updateQueue: (id: string, patch: Partial<QueueItem>) => Promise<QueueItem>;
+  reorderQueue: (queueId: string, orderedIds: string[]) => Promise<boolean>;
   deleteQueue: (id: string) => Promise<boolean>;
   startQueue: (id: string) => Promise<QueueItem>;
   stopQueue: (id: string) => Promise<QueueItem>;

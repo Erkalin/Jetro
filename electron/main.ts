@@ -16,6 +16,12 @@ import {
 import { execFile, execFileSync, spawn, type ChildProcess } from 'child_process';
 import { resolveYtDlp, getYtDlpVersion, updateYtDlp, ensureWritableYtDlp, consolidateYtDlpAfterUpdate, reconcileBinaries, bundledYtDlpPath, userYtDlpPath, ffmpegDir, envWithBinPath, getFfmpegVersion, getQuickjsVersion, resolveFfmpeg, resolveQuickjs } from './binaries';
 
+// Native dialog titles (alert/confirm/file pickers) use the app name, which
+// defaults to package.json "name" ("jetro"). Brand it as "Jetro" instead.
+// Must run before app.ready (Windows userData stays on the same folder:
+// the path differs by case only and Windows paths are case-insensitive).
+try { app.setName('Jetro'); } catch {}
+
 
 interface Item {
   id: string;
@@ -32,6 +38,8 @@ interface Item {
   createdAt: number;
   category: string;
   queueId?: string | null;
+  /** Position inside its queue (lower = higher priority). */
+  queueOrder?: number;
   /** Last time this download was attempted (queued→active transition, resume, retry, finish). Falls back to createdAt for old rows. */
   lastTryAt?: number;
   /** Batch group id for "New Batch Download" items. Null/undefined = single download. */
@@ -72,10 +80,148 @@ interface Queue {
   afterComplete?: QueuePowerAction;
   /** Epoch ms when the power action fired (fire-once guard, reset on new work). Null = not fired. */
   powerFiredAt?: number | null;
+  /** Start downloads automatically when the app launches. */
+  startOnStartup?: boolean;
+  /** "Start download at" gate enabled. */
+  startAtEnabled?: boolean;
+  /** "Stop download at" gate enabled. */
+  stopAtEnabled?: boolean;
+  /** Once-date vs daily-weekdays schedule. */
+  scheduleMode?: 'once' | 'daily';
+  /** Once date YYYY-MM-DD (scheduleMode === 'once'). */
+  onceDate?: string;
+  /** Sun..Sat flags (scheduleMode === 'daily'). */
+  weekdays?: boolean[];
+  /** Per-file retries override (null = use global settings). */
+  retriesPerFile?: number | null;
+  /** Absolute path opened when the queue finishes. */
+  openWhenDone?: string;
+  /** Quit the app when the queue finishes. */
+  exitAppWhenDone?: boolean;
+  /** Force processes to terminate on shutdown/restart. */
+  forceTerminate?: boolean;
+  /** Epoch ms when open/exit finish actions fired (fire-once guard). */
+  finishFiredAt?: number | null;
 }
 
 function normalizeQueuePowerAction(v: any): QueuePowerAction {
   return v === 'sleep' || v === 'hibernate' || v === 'shutdown' || v === 'restart' ? v : 'nothing';
+}
+
+function normalizeQueueMaxConcurrent(v: any, fallback = 1): number {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(10, Math.max(1, n));
+}
+
+function normalizeScheduleMode(v: any): 'once' | 'daily' {
+  return v === 'once' ? 'once' : 'daily';
+}
+
+function normalizeWeekdays(v: any): boolean[] {
+  if (Array.isArray(v) && v.length === 7) return v.map((x) => !!x);
+  return [true, true, true, true, true, true, true];
+}
+
+function normalizeOnceDate(v: any): string {
+  const s = String(v ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '';
+  const d = new Date(`${s}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return '';
+  return s;
+}
+
+function defaultOnceDateStr(): string {
+  try {
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  } catch {
+    return '';
+  }
+}
+
+function normalizeRetriesPerFile(v: any): number | null {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n < 0 || n > 10) return null;
+  return n;
+}
+
+function defaultQueueFields(): Pick<Queue, 'maxConcurrent' | 'startOnStartup' | 'startAtEnabled' | 'stopAtEnabled' | 'scheduleMode' | 'onceDate' | 'weekdays' | 'retriesPerFile' | 'openWhenDone' | 'exitAppWhenDone' | 'forceTerminate'> {
+  return {
+    maxConcurrent: 1,
+    startOnStartup: false,
+    startAtEnabled: false,
+    stopAtEnabled: false,
+    scheduleMode: 'daily',
+    onceDate: defaultOnceDateStr(),
+    weekdays: [true, true, true, true, true, true, true],
+    retriesPerFile: null,
+    openWhenDone: '',
+    exitAppWhenDone: false,
+    forceTerminate: false,
+  };
+}
+
+function normalizeQueueRecord(q: any): Queue {
+  const d = defaultQueueFields();
+  return {
+    ...q,
+    maxConcurrent: normalizeQueueMaxConcurrent(q?.maxConcurrent, 1),
+    schedulerEnabled: !!q?.schedulerEnabled,
+    scheduleStart: normalizeTime24h(q?.scheduleStart) || '22:00',
+    scheduleStop: normalizeTime24h(q?.scheduleStop) || '07:00',
+    afterComplete: normalizeQueuePowerAction(q?.afterComplete),
+    powerFiredAt: Number(q?.powerFiredAt) > 0 ? Number(q.powerFiredAt) : null,
+    finishFiredAt: Number((q as any)?.finishFiredAt) > 0 ? Number((q as any).finishFiredAt) : null,
+    startOnStartup: !!(q as any)?.startOnStartup,
+    startAtEnabled: (q as any)?.startAtEnabled !== undefined ? !!(q as any).startAtEnabled : !!q?.schedulerEnabled,
+    stopAtEnabled: (q as any)?.stopAtEnabled !== undefined ? !!(q as any).stopAtEnabled : !!q?.schedulerEnabled,
+    scheduleMode: normalizeScheduleMode((q as any)?.scheduleMode),
+    onceDate: normalizeOnceDate((q as any)?.onceDate) || d.onceDate,
+    weekdays: normalizeWeekdays((q as any)?.weekdays),
+    retriesPerFile: normalizeRetriesPerFile((q as any)?.retriesPerFile),
+    openWhenDone: String((q as any)?.openWhenDone || '').slice(0, 1024),
+    exitAppWhenDone: !!(q as any)?.exitAppWhenDone,
+    forceTerminate: !!(q as any)?.forceTerminate,
+  } as Queue;
+}
+
+/** Queue file order: explicit queueOrder, then batch order, then oldest first. */
+function compareQueueFiles(a: Item, b: Item): number {
+  const ao = Number((a as any)?.queueOrder);
+  const bo = Number((b as any)?.queueOrder);
+  const aHas = Number.isFinite(ao);
+  const bHas = Number.isFinite(bo);
+  if (aHas && bHas && ao !== bo) return ao - bo;
+  if (aHas && !bHas) return -1;
+  if (!aHas && bHas) return 1;
+  const bi = Number((a as any)?.batchIndex ?? 0) - Number((b as any)?.batchIndex ?? 0);
+  if (bi !== 0) return bi;
+  return Number((a as any)?.createdAt ?? 0) - Number((b as any)?.createdAt ?? 0);
+}
+
+function nextQueueOrder(queueId: string): number {
+  try {
+    let max = 0;
+    let has = false;
+    for (const it of items) {
+      if ((it.queueId || null) !== queueId) continue;
+      const o = Number((it as any)?.queueOrder);
+      if (Number.isFinite(o)) {
+        has = true;
+        if (o > max) max = o;
+      }
+    }
+    if (has) return max + 1;
+    const inQ = items.filter((i) => (i.queueId || null) === queueId);
+    if (!inQ.length) return Date.now();
+    const maxCreated = Math.max(...inQ.map((i) => Number((i as any)?.createdAt) || 0));
+    return Number.isFinite(maxCreated) && maxCreated > 0 ? maxCreated + 1 : Date.now();
+  } catch {
+    return Date.now();
+  }
 }
 
 const storeDir = path.join(app.getPath('userData'), 'jetro');
@@ -138,6 +284,8 @@ let settings: {
   retryDelaySec: number;
   /** Check GitHub releases on startup. */
   checkUpdatesOnStart: boolean;
+  /** Show the in-app download-complete popup. */
+  showCompletePopup: boolean;
   /** Launch at OS startup (installable version only; ignored for portable). */
   launchAtStartup: boolean;
 } & NetworkSettings = {
@@ -152,6 +300,7 @@ let settings: {
   maxRetries: 3,
   retryDelaySec: 5,
   checkUpdatesOnStart: true,
+  showCompletePopup: true,
   launchAtStartup: false,
   ...defaultNetworkSettings(),
 };
@@ -167,6 +316,7 @@ function normalizeRetrySettings(s: any) {
   (s as any).maxRetries = Number.isFinite(maxR) ? maxR : 3;
   (s as any).retryDelaySec = Number.isFinite(delay) ? delay : 5;
   (s as any).checkUpdatesOnStart = (s as any)?.checkUpdatesOnStart !== false;
+  (s as any).showCompletePopup = (s as any)?.showCompletePopup !== false;
   (s as any).launchAtStartup = (s as any)?.launchAtStartup === true;
 }
 
@@ -359,7 +509,12 @@ function loadAll() {
     if (fs.existsSync(settingsFile)) settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile, 'utf8')) };
     if (fs.existsSync(queuesFile)) queues = JSON.parse(fs.readFileSync(queuesFile, 'utf8'));
     // backfill queueId / batch fields for old items
-    items = items.map((i: any) => ({ queueId: null, batchId: null, batchIndex: 0, attempts: 0, nextRetryAt: null, ...i }));
+    items = items.map((i: any) => ({ queueId: null, batchId: null, batchIndex: 0, attempts: 0, nextRetryAt: null, queueOrder: Number(i?.queueOrder) || Number(i?.createdAt) || 0, ...i }));
+    // Ensure every item has a numeric queueOrder (old rows fall back to createdAt).
+    items = items.map((i: any) => ({
+      ...i,
+      queueOrder: Number.isFinite(Number(i?.queueOrder)) ? Number(i.queueOrder) : (Number(i?.createdAt) || 0),
+    }));
     // backfill Last Try for rows saved before lastTryAt existed
     items = items.map((i: any) => ({
       ...i,
@@ -376,14 +531,52 @@ function loadAll() {
     // Normalize per-queue schedules to strict 24-hour HH:MM so an old or
     // hand-edited queues.json can never wedge a queue shut.
     try {
-      queues = (Array.isArray(queues) ? queues : []).map((q: any) => ({
-        ...q,
-        schedulerEnabled: !!q?.schedulerEnabled,
-        scheduleStart: normalizeTime24h(q?.scheduleStart) || '22:00',
-        scheduleStop: normalizeTime24h(q?.scheduleStop) || '07:00',
-        afterComplete: normalizeQueuePowerAction(q?.afterComplete),
-        powerFiredAt: Number(q?.powerFiredAt) > 0 ? Number(q.powerFiredAt) : null,
-      }));
+      queues = (Array.isArray(queues) ? queues : []).map((q: any) => normalizeQueueRecord(q));
+    } catch {}
+    // One-time cleanup: batch queues created by older versions baked the file
+    // count into their name ("Batch – host (5 files)"). That snapshot goes
+    // stale as soon as files are added/removed (live counts now render as
+    // badges), so strip it back to the clean host name. Only exact
+    // auto-generated shapes match — user-chosen names and the " (2)"
+    // dedup suffixes are never touched.
+    try {
+      // Pre-seed with every current name so a stripped name dedups against
+      // queues processed later in the array too (never the reverse: existing
+      // names are never rewritten).
+      const seen = new Set<string>(
+        (Array.isArray(queues) ? queues : []).map((q: any) => String((q as any)?.name || '').toLowerCase()),
+      );
+      queues = (Array.isArray(queues) ? queues : []).map((q: any) => {
+        const name = String((q as any)?.name || '');
+        const m = /^(Batch(?: – .+)?) \(\d+ files?\)$/.exec(name);
+        if (!m) return q;
+        const base = m[1].trim().slice(0, 60) || 'Batch';
+        let cand = base;
+        for (let n = 2; n < 1000 && seen.has(cand.toLowerCase()); n++) {
+          const suffix = ` (${n})`;
+          cand = (base.slice(0, 60 - suffix.length) + suffix).trim() || `Batch${suffix}`;
+        }
+        seen.add(cand.toLowerCase());
+        return { ...q, name: cand };
+      });
+    } catch {}
+    // Queues marked "start on startup" resume automatically after relaunch.
+    try {
+      for (const q of queues) {
+        if (!(q as any)?.startOnStartup) continue;
+        (q as any).running = true;
+        (q as any).powerFiredAt = null;
+        (q as any).finishFiredAt = null;
+        for (const it of items.filter((i) => (i.queueId || null) === (q as any).id)) {
+          if (it.status === 'paused' || it.status === 'error') {
+            it.status = 'queued';
+            (it as any).error = undefined;
+            it.attempts = 0;
+            it.nextRetryAt = null;
+            touchTry(it);
+          }
+        }
+      }
     } catch {}
     // Backfill retry + update-check defaults for old settings files.
     try { normalizeRetrySettings(settings); } catch {}
@@ -687,11 +880,20 @@ function clearRetryTimer(id: string) {
     retryTimers.delete(id);
   }
 }
+function queueRetryLimit(queueId: string | null): number {
+  try {
+    const q = queueId ? queues.find((x) => x.id === queueId) : undefined;
+    const per = normalizeRetriesPerFile((q as any)?.retriesPerFile);
+    if (per !== null) return per;
+  } catch {}
+  return Math.min(10, Math.max(0, Math.round(Number((settings as any).maxRetries ?? 3))));
+}
+
 /** Re-queue an item with exponential backoff. Returns true when scheduled. */
 function scheduleAutoRetry(item: Item): boolean {
   try {
     if (!(settings as any).autoRetryEnabled) return false;
-    const maxR = Math.min(10, Math.max(0, Math.round(Number((settings as any).maxRetries ?? 3))));
+    const maxR = queueRetryLimit((item as any)?.queueId || null);
     const baseSec = Math.min(300, Math.max(1, Math.round(Number((settings as any).retryDelaySec ?? 5))));
     const used = Math.max(0, Math.round(Number(item.attempts || 0)));
     if (used >= maxR) return false;
@@ -728,15 +930,60 @@ function scheduleAutoRetry(item: Item): boolean {
 function resetQueuePower(queueId: string | null) {
   if (!queueId) return;
   const q = queues.find((x) => x.id === queueId);
-  if (q && q.powerFiredAt) {
-    q.powerFiredAt = null;
-    broadcast(true);
+  if (!q) return;
+  let changed = false;
+  if ((q as any).powerFiredAt) {
+    (q as any).powerFiredAt = null;
+    changed = true;
   }
+  if ((q as any).finishFiredAt) {
+    (q as any).finishFiredAt = null;
+    changed = true;
+  }
+  if (changed) broadcast(true);
+}
+
+function maybeFireQueueFinishActions() {
+  try {
+    for (const q of queues) {
+      const qItems = items.filter((i) => (i.queueId || null) === q.id);
+      if (!qItems.length) continue;
+      if (!qItems.every((i) => i.status === 'completed')) continue;
+      if (!(q as any).finishFiredAt) {
+        (q as any).finishFiredAt = Date.now();
+        broadcast(true);
+        const openTarget = String((q as any)?.openWhenDone || '').trim();
+        if (openTarget) {
+          try {
+            if (fs.existsSync(openTarget)) {
+              const st = fs.statSync(openTarget);
+              if (st.isFile()) shell.openPath(openTarget).catch(() => {});
+              else if (st.isDirectory()) shell.openPath(openTarget).catch(() => {});
+            }
+          } catch {}
+        }
+        if ((q as any)?.exitAppWhenDone) {
+          try {
+            setTimeout(() => {
+              try {
+                const still = items.filter((i) => (i.queueId || null) === q.id);
+                if (still.length && still.every((i) => i.status === 'completed')) {
+                  try { saveAllSync(); } catch {}
+                  app.quit();
+                }
+              } catch {}
+            }, 3000);
+          } catch {}
+        }
+      }
+    }
+  } catch {}
 }
 
 /** Fire per-queue power actions: only when every item is completed. */
 function maybeFireQueuePower() {
   try {
+    maybeFireQueueFinishActions();
     for (const q of queues) {
       const action = normalizeQueuePowerAction((q as any).afterComplete);
       if (action === 'nothing') continue;
@@ -753,15 +1000,17 @@ function maybeFireQueuePower() {
   } catch {}
 }
 
-function runPowerAction(action: string) {
+function runPowerAction(action: string, force = false) {
   const a = normalizeQueuePowerAction(action);
   if (a === 'nothing') return;
   try {
     if (process.platform !== 'win32') return;
     if (a === 'shutdown') {
-      spawn('shutdown', ['/s', '/t', '0'], { detached: true, stdio: 'ignore', windowsHide: true })?.unref?.();
+      const args = force ? ['/s', '/f', '/t', '0'] : ['/s', '/t', '0'];
+      spawn('shutdown', args, { detached: true, stdio: 'ignore', windowsHide: true })?.unref?.();
     } else if (a === 'restart') {
-      spawn('shutdown', ['/r', '/t', '0'], { detached: true, stdio: 'ignore', windowsHide: true })?.unref?.();
+      const args = force ? ['/r', '/f', '/t', '0'] : ['/r', '/t', '0'];
+      spawn('shutdown', args, { detached: true, stdio: 'ignore', windowsHide: true })?.unref?.();
     } else if (a === 'hibernate') {
       spawn('shutdown', ['/h'], { detached: true, stdio: 'ignore', windowsHide: true })?.unref?.();
     } else if (a === 'sleep') {
@@ -807,18 +1056,65 @@ function time24hToMinutes(v: string): number {
   if (!m) return NaN;
   return Number(m[1]) * 60 + Number(m[2]);
 }
-function inWindow(enabled: boolean, start?: string, stop?: string): boolean {
-  if (!enabled) return true;
-  const s = time24hToMinutes(String(start || ''));
-  const e = time24hToMinutes(String(stop || ''));
-  // Invalid times must never wedge a queue shut: fail open.
-  if (!Number.isFinite(s) || !Number.isFinite(e)) return true;
-  const now = new Date();
-  const cur = now.getHours() * 60 + now.getMinutes();
-  return s <= e ? cur >= s && cur <= e : cur >= s || cur <= e;
+function inDateWindow(q: Queue): boolean {
+  try {
+    const mode = normalizeScheduleMode((q as any)?.scheduleMode);
+    if (mode === 'once') {
+      const iso = normalizeOnceDate((q as any)?.onceDate);
+      // No valid once-date: fail open so a bad value never wedges the queue.
+      if (!iso) return true;
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      return today === iso;
+    }
+    const days = normalizeWeekdays((q as any)?.weekdays);
+    // All unchecked = fail open (IDM-like: nothing selected means no day filter).
+    if (!days.some(Boolean)) return true;
+    return !!days[new Date().getDay()];
+  } catch {
+    return true;
+  }
 }
 function inQueueWindow(q: Queue): boolean {
-  return inWindow(q.schedulerEnabled, q.scheduleStart, q.scheduleStop);
+  // Legacy single toggle still gates both time checks; the Scheduler window
+  // exposes finer start/stop toggles that override it when present.
+  const startOn = (q as any)?.startAtEnabled !== undefined ? !!(q as any).startAtEnabled : !!q.schedulerEnabled;
+  const stopOn = (q as any)?.stopAtEnabled !== undefined ? !!(q as any).stopAtEnabled : !!q.schedulerEnabled;
+  const gated = startOn || stopOn;
+  if (!gated) {
+    // No time gate: only the day filter still applies (and only when the
+    // queue was created with scheduling enabled).
+    if (q.schedulerEnabled && !inDateWindow(q)) return false;
+    return true;
+  }
+  if (!inDateWindow(q)) return false;
+  const now = new Date();
+  const cur = now.getHours() * 60 + now.getMinutes();
+  if (startOn) {
+    const s = time24hToMinutes(String(q.scheduleStart || ''));
+    if (Number.isFinite(s) && cur < s) return false;
+  }
+  if (stopOn) {
+    const e = time24hToMinutes(String(q.scheduleStop || ''));
+    if (Number.isFinite(e)) {
+      const s = startOn ? time24hToMinutes(String(q.scheduleStart || '')) : NaN;
+      if (startOn && Number.isFinite(s)) {
+        // Start+stop window (overnight ranges wrap past midnight).
+        const inside = s <= e ? cur >= s && cur <= e : cur >= s || cur <= e;
+        if (!inside) return false;
+      } else if (cur > e) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+function queueConcurrentLimit(q: Queue): number {
+  const per = normalizeQueueMaxConcurrent((q as any)?.maxConcurrent, 1);
+  const global = Math.min(10, Math.max(1, Math.round(Number((settings as any).maxConcurrentDownloads ?? 3)) || 3));
+  // Per-queue value caps its own queue; the global setting stays a hard ceiling.
+  return Math.min(per, global);
 }
 
 /**
@@ -830,7 +1126,9 @@ function inQueueWindow(q: Queue): boolean {
 function enforceQueueSchedules(): boolean {
   let parked = false;
   for (const q of queues) {
-    if (!q.running || !q.schedulerEnabled || inQueueWindow(q)) continue;
+    if (!q.running || inQueueWindow(q)) continue;
+    const gated = !!((q as any)?.startAtEnabled || (q as any)?.stopAtEnabled || (q as any)?.schedulerEnabled);
+    if (!gated) continue;
     for (const it of items.filter((i) => (i.queueId || null) === q.id && (i.status === 'downloading' || i.status === 'merging'))) {
       try {
         if (it.via === 'ytdlp') {
@@ -908,18 +1206,20 @@ async function pumpQueue() {
     }
   }
   // Per-queue downloads: only when queue is running + in its schedule window.
-  // Every queue follows the global concurrent-downloads setting.
+  // Each queue drains in queueOrder (Up = earlier) and is capped by its own
+  // "Download N files at the same time" value (global stays a hard ceiling).
   for (const q of queues) {
     if (!q.running) continue;
     if (!inQueueWindow(q)) continue;
     const nowQ = Date.now();
     const queued = items
       .filter((i) => i.status === 'queued' && (i.queueId || null) === q.id && (!i.nextRetryAt || Number(i.nextRetryAt) <= nowQ))
-      .sort((a, b) => (Number(a.batchIndex ?? 0) - Number(b.batchIndex ?? 0)) || (a.createdAt - b.createdAt));
+      .sort(compareQueueFiles);
+    const perQueueCap = queueConcurrentLimit(q);
     while (
       queued.length &&
       activeCount() < settings.maxConcurrentDownloads &&
-      activeCountForQueue(q.id) < batchLimit()
+      activeCountForQueue(q.id) < perQueueCap
     ) {
       const next = queued.shift()!;
       if (next.status !== 'queued') continue;
@@ -1394,7 +1694,7 @@ function ensureTray(): boolean {
 // second-instance argv, macOS via open-url). We focus the window and forward
 // to the renderer, which opens New Download pre-filled + auto-resolves
 // (direct probe or yt-dlp video probe).
-let pendingExternalUrl: { url: string; source: string } | null = null;
+let pendingExternalUrls: { url: string; source: string }[] = [];
 
 function parseJetroProtocolUrl(raw: string): { url: string; source: string } | null {
   try {
@@ -1440,8 +1740,10 @@ function deliverExternalUrl(url: string, source: string) {
       return;
     }
   } catch {}
-  // Window not ready yet (cold start) — flush on ready-to-show / did-finish-load.
-  pendingExternalUrl = payload;
+  // Window not ready yet (cold start) — queue and flush on ready-to-show /
+  // did-finish-load so rapid successive links are all delivered in order.
+  pendingExternalUrls.push(payload);
+  if (pendingExternalUrls.length > 20) pendingExternalUrls = pendingExternalUrls.slice(-20);
   // Retry shortly in case the window becomes ready without re-firing flush.
   try {
     setTimeout(() => flushPendingExternalUrl(), 1500);
@@ -1449,11 +1751,14 @@ function deliverExternalUrl(url: string, source: string) {
 }
 
 function flushPendingExternalUrl() {
-  if (!pendingExternalUrl) return;
+  if (!pendingExternalUrls.length) return;
   try {
     if (!win || win.isDestroyed()) return;
-    win.webContents.send('external-url', pendingExternalUrl);
-    pendingExternalUrl = null;
+    const queued = pendingExternalUrls;
+    pendingExternalUrls = [];
+    for (const payload of queued) {
+      try { win.webContents.send('external-url', payload); } catch {}
+    }
   } catch {}
 }
 
@@ -1526,7 +1831,7 @@ app.whenReady().then(() => {
     const cold = extractJetroUrlFromArgv(process.argv || []);
     if (cold) {
       const parsed = parseJetroProtocolUrl(cold);
-      if (parsed) pendingExternalUrl = { url: parsed.url, source: parsed.source };
+      if (parsed) pendingExternalUrls.push({ url: parsed.url, source: parsed.source });
     }
   } catch {}
   createWindow();
@@ -1583,6 +1888,11 @@ app.on('before-quit', () => {
 // Shared single-download add path. Normalizes + probes + queues.
 async function addSingleDownload(rawUrl: string, opts?: any): Promise<Item> {
   const url = normalizeDownloadUrl(rawUrl);
+  // HLS/DASH playlists are not direct files: the segmented engine would save
+  // the few-KB playlist text as video. Point at video detection instead.
+  if (/\.m3u8(\?|#|$)/i.test(url) || /\.mpd(\?|#|$)/i.test(url)) {
+    throw new Error('This looks like a stream playlist (m3u8/mpd), not a direct file — use "Is this a video/audio page? Click to detect" to download it as video.');
+  }
   let filename = opts?.filename;
   let total = 0;
   let supportsRange = false;
@@ -1591,7 +1901,22 @@ async function addSingleDownload(rawUrl: string, opts?: any): Promise<Item> {
     total = p.totalBytes;
     supportsRange = p.supportsRange;
     if (!filename) filename = p.filename;
-  } catch {
+    // Hotlink-protected / expired CDN URL: the server answered with a web
+    // page (login/block/error HTML, a few KB) instead of the file. Saving it
+    // as .mp4 is what produced "a few bytes, not a video" — fail fast with a
+    // hint instead of completing a fake video.
+    try {
+      const ct = String((p as any)?.contentType || '').toLowerCase();
+      const fn = String(filename || (p as any)?.filename || url).toLowerCase();
+      const looksVideo = /\.(mp4|mkv|webm|mov|avi|m4v|mp3|m4a|aac|opus|ogg|wav|flac)$/i.test(fn);
+      if (looksVideo && ct.includes('text/html') && (total || 0) > 0 && (total || 0) < 300 * 1024) {
+        throw new Error('Server returned a web page instead of a video file (hotlink protection or expired link) — use "Is this a video/audio page? Click to detect" to download it as video.');
+      }
+    } catch (e: any) {
+      if (/web page instead of a video/i.test(String(e?.message || ''))) throw e;
+    }
+  } catch (e: any) {
+    if (/web page instead of a video|stream playlist/i.test(String(e?.message || ''))) throw e;
     if (!filename) filename = guessFilename(url);
   }
   filename = String(filename).replace(/[<>:"/\\|?*]/g, '_');
@@ -1648,6 +1973,7 @@ async function addSingleDownload(rawUrl: string, opts?: any): Promise<Item> {
     lastTryAt: now,
     category: categoryOf(filename),
     queueId: validQueueId,
+    queueOrder: validQueueId ? nextQueueOrder(validQueueId) : now,
     batchId: opts?.batchId ? String(opts.batchId) : null,
     batchIndex: Number.isFinite(Number(opts?.batchIndex)) ? Number(opts.batchIndex) : 0,
     attempts: 0,
@@ -1742,7 +2068,9 @@ function uniqueBatchQueueName(suggested: string): string {
   return `${base.slice(0, 50)} ${Date.now().toString(36)}`.trim();
 }
 
-/** Suggested batch queue name from the batch URLs: host + file count. */
+/** Suggested batch queue name from the batch URLs: host only (never a file
+ *  count — counts baked into names go stale the moment files are added or
+ *  removed; live counts are shown as badges in the sidebar/queue menus). */
 function batchQueueNameFor(clean: string[]): string {
   let host = '';
   try {
@@ -1750,8 +2078,7 @@ function batchQueueNameFor(clean: string[]): string {
   } catch {
     host = '';
   }
-  const count = clean.length;
-  const core = host ? `Batch – ${host} (${count} file${count === 1 ? '' : 's'})` : `Batch (${count} file${count === 1 ? '' : 's'})`;
+  const core = host ? `Batch – ${host}` : 'Batch';
   return uniqueBatchQueueName(core.slice(0, 60));
 }
 
@@ -1771,13 +2098,14 @@ ipcMain.handle('batch:add', async (_e, urls?: string[], opts?: any) => {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + 'b',
     name: queueName,
     running: true,
-    maxConcurrent: Math.min(10, Math.max(1, Math.round(Number(settings.maxConcurrentDownloads) || 3))),
     schedulerEnabled: false,
     scheduleStart: '22:00',
     scheduleStop: '07:00',
     createdAt: baseTs,
     afterComplete: 'nothing',
     powerFiredAt: null,
+    finishFiredAt: null,
+    ...defaultQueueFields(),
   };
   queues.push(queue);
   // Probe first (in order) so filenames/sizes are known, then insert so that
@@ -1850,6 +2178,7 @@ ipcMain.handle('batch:add', async (_e, urls?: string[], opts?: any) => {
         lastTryAt: baseTs + idx,
         category: categoryOf(name),
         queueId: queue.id,
+        queueOrder: baseTs + idx,
         batchId,
         batchIndex: idx,
         attempts: 0,
@@ -1866,10 +2195,22 @@ ipcMain.handle('batch:add', async (_e, urls?: string[], opts?: any) => {
 
 ipcMain.handle('dl:pause', async (_e, id: string) => {
   const it = items.find((i) => i.id === id);
+  // Merging (ffmpeg mux/extract) is atomic and can't be paused: killing it
+  // mid-merge leaves a partial final file while temp fragments look done, so
+  // the next resume restarts from scratch and the kill often lands after the
+  // merge finished ("pause doesn't work"). Treat as non-pausable — the UI
+  // grays the button out for this state.
+  if (it?.status === 'merging') return;
+  // yt-dlp downloads are non-pausable while downloading: killing the yt-dlp
+  // process mid-transfer is unreliable, so pause is disabled (grayed out in
+  // the UI) and ignored here. Only a queued yt-dlp item may still be paused
+  // (to keep it from starting).
+  if (it?.via === 'ytdlp' && it?.status === 'downloading') return;
   clearRetryTimer(id);
   if (it) it.nextRetryAt = null;
   if (it?.via === 'ytdlp') {
-    killYtJob(id); // yt-dlp resumes partial files on re-spawn
+    if (it.status !== 'queued') return;
+    killYtJob(id); // no-op when nothing is running (race safety)
     if (it) {
       it.status = 'paused';
       it.speedBps = 0;
@@ -1946,32 +2287,116 @@ async function unlinkWithRetries(target: string, attempts = 6): Promise<void> {
   }
 }
 
-/** Remove yt-dlp side-products next to the final file (split-stream fragments, subs). */
-async function cleanupYtDlpTemps(savePath: string): Promise<void> {
+/** Remove yt-dlp side-products next to the final file (split-stream fragments, subs).
+ *  Siblings are matched by the file stem, so a fragment can never escape when
+ *  its format id is non-numeric (sb0, hls-..., dash-...) or when yt-dlp leaves
+ *  `.part-Frag` / `-FragNNN` chunks / `.ytdl` / metadata sidecars behind.
+ *  Deletes use the full
+ *  retry budget: on Windows the killed process often still holds a handle for
+ *  a moment, and a 2-try sweep is exactly how one locked fragment survives a
+ *  removal. `includeAltSourceExt` additionally drops the pre-conversion
+ *  intermediate (`<stem>.webm/m4a/...` for audio-only `--extract-audio`
+ *  downloads) — only for unfinished downloads, and never a path owned by
+ *  another list entry. */
+async function cleanupYtDlpTemps(savePath: string, opts?: { audioOnly?: boolean; includeAltSourceExt?: boolean }): Promise<void> {
   try {
     const dir = path.dirname(savePath);
-    const base = path.basename(savePath);
-    const dot = base.lastIndexOf('.');
-    const stem = dot > 0 ? base.slice(0, dot) : base;
-    // Known single-file sidecars.
-    for (const suffix of ['.part', '.ytdl', '.temp', '.tmp']) {
-      try { await unlinkWithRetries(savePath + suffix, 2); } catch {}
+    const rawBase = path.basename(savePath);
+    if (!rawBase) return;
+    const bases = new Set<string>([rawBase]);
+    // startYtDownload escapes % → # for -o, so on-disk names of legacy rows
+    // may use '#' where savePath still has '%'.
+    const escBase = rawBase.replace(/%/g, '#');
+    if (escBase !== rawBase) bases.add(escBase);
+    // Known single-file sidecars of the final file itself.
+    for (const base of bases) {
+      const full = path.join(dir, base);
+      for (const suffix of ['.part', '.ytdl', '.temp', '.tmp']) {
+        try { await unlinkWithRetries(full + suffix, 6); } catch {}
+      }
     }
-    // Fragment / subtitle siblings: "<stem>.f*.*", "<stem>.*.vtt/srt/ass/...".
+    const stems = new Set<string>();
+    for (const base of bases) {
+      const dot = base.lastIndexOf('.');
+      stems.add(dot > 0 ? base.slice(0, dot) : base);
+    }
     let entries: string[] = [];
     try { entries = fs.readdirSync(dir); } catch { return; }
     const subExt = /\.(vtt|srt|ass|ssa|lrc|ttml|sbv)(\.part)?$/i;
+    const metaExt = /\.(info\.json|description|annotations|live_chat\.json)(\.part)?$/i;
+    const audioSrcExt = /^(m4a|webm|weba|opus|ogg|oga|mp3|mp4|mkv|mov|avi|flv|wav|flac|aac|m4b|ac3|dts)$/i;
+    const owned = new Set<string>();
+    try {
+      for (const it of items) {
+        if (it?.savePath) owned.add(path.resolve(it.savePath));
+      }
+    } catch {}
     for (const name of entries) {
-      if (name === base) continue;
-      if (!name.startsWith(stem + '.')) continue;
-      const rest = name.slice(stem.length + 1);
-      const isFragment = /^f\d+/i.test(rest) || /\.f\d+/i.test(name) || /\.temp\./i.test(name);
-      const isSub = subExt.test(name);
-      if (isFragment || isSub) {
-        try { await unlinkWithRetries(path.join(dir, name), 2); } catch {}
+      if (bases.has(name)) continue;
+      let rest: string | null = null;
+      for (const stem of stems) {
+        if (stem && name.startsWith(stem + '.')) { rest = name.slice(stem.length + 1); break; }
+      }
+      if (rest == null) continue;
+      const full = path.join(dir, name);
+      // `.part`, `.part.`, `.part-FragNNN` (native HLS/DASH fragments).
+      const isPart = /\.part($|\.|-Frag)/i.test(name);
+      // In-flight HLS/DASH chunk `<tmp>-FragNNN`. This app passes `--no-part`,
+      // so tmp IS the output name: `video.mp4-Frag12` /
+      // `video.f616.mp4-Frag3`. Only the chunk in flight at kill time is left
+      // (finished ones are appended and removed), hence the single leftover.
+      const isFragChunk = /-Frag\d+(\.part)?$/i.test(name);
+      const isYtdl = /\.ytdl$/i.test(name);
+      const isTempInfix = /\.temp\./i.test(name) || /\.tmp$/i.test(name);
+      // Split-stream temps `<stem>.f<format_id>.<ext>`. Format ids are numeric
+      // on YouTube (f616/f140) but protocol-ish elsewhere (fhls-720,
+      // fdash-audio, fhttp-720, fsb0, ...). Only those shapes count, so a
+      // user's own `<stem>.final.mp4` is never mistaken for a fragment.
+      const isFragId = (seg: string): boolean => /^f(?:\d|hls|dash|http|m3u8|mpd|ism|rtmp|sb)[\w-]*$/i.test(seg);
+      const isFragment = isFragId(rest.split('.')[0]) || /\.f(?:\d|hls|dash|http|m3u8|mpd|ism|rtmp|sb)[\w-]*\./i.test(name);
+      const isSub = subExt.test(name) || metaExt.test(name);
+      let isAltAudio = false;
+      if (opts?.includeAltSourceExt && opts?.audioOnly && !rest.includes('.') && audioSrcExt.test(rest)) {
+        try { isAltAudio = !owned.has(path.resolve(full)); } catch { isAltAudio = true; }
+      }
+      if (isPart || isYtdl || isTempInfix || isFragment || isFragChunk || isSub || isAltAudio) {
+        try { await unlinkWithRetries(full, 6); } catch {}
       }
     }
   } catch {}
+}
+
+/** Delayed second sweep for yt-dlp leftovers that were still locked (or still
+ *  being flushed by the dying process) during the first pass. Skipped when a
+ *  live entry owns the same path again (download re-added meanwhile) so the
+ *  sweep can never eat a fresh download's fragments. */
+function scheduleYtDlpResweep(savePath: string, opts?: { audioOnly?: boolean; includeAltSourceExt?: boolean }): void {
+  const target = String(savePath || '');
+  if (!target) return;
+  setTimeout(() => {
+    try {
+      // Same-path re-add, or a same-stem sibling (e.g. `video.m4a` next to a
+      // removed `video.mp4`) actively writing in the same folder — either way
+      // the sweep could eat a live download's fragments, so skip it.
+      const dir = path.dirname(target);
+      const base = path.basename(target);
+      const dot = base.lastIndexOf('.');
+      const stem = (dot > 0 ? base.slice(0, dot) : base).toLowerCase();
+      const live = items.some((it) => {
+        if (!it?.savePath) return false;
+        if (it.savePath === target &&
+          (it.status === 'queued' || it.status === 'downloading' || it.status === 'merging')) return true;
+        if ((it.status === 'downloading' || it.status === 'merging') && path.dirname(it.savePath) === dir) {
+          const b = path.basename(it.savePath);
+          const d = b.lastIndexOf('.');
+          if ((d > 0 ? b.slice(0, d) : b).toLowerCase() === stem) return true;
+        }
+        return false;
+      });
+      if (live) return;
+      cleanupYtDlpTemps(target, opts).catch(() => {});
+    } catch {}
+  }, 2500);
 }
 ipcMain.handle('dl:remove', async (_e, id: string, deleteFile?: boolean) => {
   killYtJob(id);
@@ -1994,7 +2419,12 @@ ipcMain.handle('dl:remove', async (_e, id: string, deleteFile?: boolean) => {
       if (shouldDeleteMain) {
         await unlinkWithRetries(rm.savePath);
         if (rm.via === 'ytdlp') {
-          try { await cleanupYtDlpTemps(rm.savePath); } catch {}
+          // Pre-conversion intermediates (<stem>.webm/m4a/...) only exist for
+          // unfinished audio downloads — completed ones keep their siblings.
+          const sweepOpts = { audioOnly: !!(rm as any).audioOnly, includeAltSourceExt: !isCompleted };
+          try { await cleanupYtDlpTemps(rm.savePath, sweepOpts); } catch {}
+          // Second pass: the killed process may still have held a handle.
+          scheduleYtDlpResweep(rm.savePath, sweepOpts);
         }
       }
       // Resume sidecar is never user data — always drop it so a removed
@@ -2099,6 +2529,11 @@ ipcMain.handle('dl:move', async (_e, id: string, queueId?: string | null) => {
   const prevQueue = it.queueId || null;
   const valid = queueId && queues.some((q) => q.id === queueId) ? String(queueId) : null;
   it.queueId = valid;
+  if (valid && valid !== prevQueue) {
+    try { (it as any).queueOrder = nextQueueOrder(valid); } catch {}
+  } else if (!valid) {
+    try { (it as any).queueOrder = Number((it as any)?.createdAt) || Date.now(); } catch {}
+  }
   // Moving to a stopped queue parks it as paused so it won't auto-run elsewhere.
   if (valid) {
     const q = queues.find((x) => x.id === valid);
@@ -2160,7 +2595,7 @@ ipcMain.handle('dl:rename', async (_e, id: string, newName?: string) => {
   // yt-dlp fragments/subs belong to the old stem and can't resume under the
   // new name — drop them so they don't linger as orphans.
   if ((it as any)?.via === 'ytdlp') {
-    try { await cleanupYtDlpTemps(oldPath); } catch {}
+    try { await cleanupYtDlpTemps(oldPath, { audioOnly: !!(it as any).audioOnly, includeAltSourceExt: true }); } catch {}
   }
   it.filename = name;
   it.savePath = newPath;
@@ -2180,7 +2615,12 @@ ipcMain.handle('dl:redownload', async (_e, id: string) => {
   if (it.via === 'ytdlp') {
     killYtJob(id);
     await unlinkWithRetries(it.savePath);
-    try { await cleanupYtDlpTemps(it.savePath); } catch {}
+    const sweepOpts = { audioOnly: !!(it as any).audioOnly, includeAltSourceExt: true };
+    try { await cleanupYtDlpTemps(it.savePath, sweepOpts); } catch {}
+    // The entry stays (re-queued): the resweep self-skips while it is live so
+    // it can never eat a restarted download's fragments; the immediate pass
+    // above (full retry budget) is the cleanup for this path.
+    scheduleYtDlpResweep(it.savePath, sweepOpts);
     it.downloadedBytes = 0;
     it.status = 'queued';
     it.error = undefined;
@@ -2240,17 +2680,19 @@ ipcMain.handle('queue:list', () => queues);
 ipcMain.handle('queue:create', async (_e, name?: string) => {
   const clean = String(name || '').trim().slice(0, 60);
   if (!clean) throw new Error('Queue name cannot be empty');
+  const d = defaultQueueFields();
   const q: Queue = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     name: clean,
     running: false,
-    maxConcurrent: Math.min(5, Math.max(1, settings.maxConcurrentDownloads || 2)),
     schedulerEnabled: false,
     scheduleStart: '22:00',
     scheduleStop: '07:00',
     createdAt: Date.now(),
     afterComplete: 'nothing',
     powerFiredAt: null,
+    finishFiredAt: null,
+    ...d,
   };
   queues.push(q);
   broadcast(true);
@@ -2264,10 +2706,33 @@ ipcMain.handle('queue:update', async (_e, id: string, patch: Partial<Queue>) => 
     if (!clean) throw new Error('Queue name cannot be empty');
     q.name = clean;
   }
+  if ((patch as any).maxConcurrent !== undefined) {
+    q.maxConcurrent = normalizeQueueMaxConcurrent((patch as any).maxConcurrent, q.maxConcurrent || 1);
+  }
   if (patch.schedulerEnabled !== undefined) q.schedulerEnabled = !!patch.schedulerEnabled;
-  // Per-queue concurrency was removed: queues follow the global
-  // concurrent-downloads setting, so maxConcurrent patches are ignored.
-  void patch.maxConcurrent;
+  if ((patch as any).startOnStartup !== undefined) q.startOnStartup = !!(patch as any).startOnStartup;
+  if ((patch as any).startAtEnabled !== undefined) q.startAtEnabled = !!(patch as any).startAtEnabled;
+  if ((patch as any).stopAtEnabled !== undefined) q.stopAtEnabled = !!(patch as any).stopAtEnabled;
+  if ((patch as any).scheduleMode !== undefined) q.scheduleMode = normalizeScheduleMode((patch as any).scheduleMode);
+  if ((patch as any).onceDate !== undefined) {
+    const v = normalizeOnceDate((patch as any).onceDate);
+    if (!v) throw new Error('Once date must be YYYY-MM-DD.');
+    q.onceDate = v;
+  }
+  if ((patch as any).weekdays !== undefined) {
+    const w = normalizeWeekdays((patch as any).weekdays);
+    q.weekdays = w;
+  }
+  if ((patch as any).retriesPerFile !== undefined) {
+    const raw = (patch as any).retriesPerFile;
+    q.retriesPerFile = raw === null || raw === '' ? null : normalizeRetriesPerFile(raw);
+    if (raw !== null && raw !== '' && q.retriesPerFile === null) throw new Error('Retries must be 0-10.');
+  }
+  if ((patch as any).openWhenDone !== undefined) {
+    q.openWhenDone = String((patch as any).openWhenDone || '').slice(0, 1024);
+  }
+  if ((patch as any).exitAppWhenDone !== undefined) q.exitAppWhenDone = !!(patch as any).exitAppWhenDone;
+  if ((patch as any).forceTerminate !== undefined) q.forceTerminate = !!(patch as any).forceTerminate;
   if (patch.scheduleStart !== undefined) {
     const v = normalizeTime24h(patch.scheduleStart);
     if (!v) throw new Error('Start must be HH:MM from 00:00 to 23:59.');
@@ -2283,9 +2748,38 @@ ipcMain.handle('queue:update', async (_e, id: string, patch: Partial<Queue>) => 
     // Changing the action re-arms the fire-once guard so a new choice can fire.
     q.powerFiredAt = null;
   }
+  if ((patch as any).openWhenDone !== undefined || (patch as any).exitAppWhenDone !== undefined) {
+    (q as any).finishFiredAt = null;
+  }
+  // Keep the legacy toggle in sync when the fine-grained toggles change.
+  try {
+    q.schedulerEnabled = !!((q as any).startAtEnabled || (q as any).stopAtEnabled);
+  } catch {}
   broadcast(true);
   pumpQueue();
   return q;
+});
+ipcMain.handle('queue:reorder', async (_e, queueId?: string, orderedIds?: string[]) => {
+  const qid = String(queueId || '');
+  if (!qid || !queues.some((q) => q.id === qid)) throw new Error('Queue not found');
+  const list = Array.isArray(orderedIds) ? orderedIds.map((x) => String(x)) : [];
+  if (!list.length) return false;
+  const inQueue = new Set(items.filter((i) => (i.queueId || null) === qid).map((i) => i.id));
+  // Stamp queueOrder by position; ignore unknown ids so a stale client can't wipe order.
+  const base = Date.now();
+  let pos = 0;
+  for (const id of list) {
+    if (!inQueue.has(id)) continue;
+    const it = items.find((i) => i.id === id);
+    if (it) (it as any).queueOrder = base + pos++;
+  }
+  // Any queue file missing from the list goes last (stable).
+  for (const it of items.filter((i) => (i.queueId || null) === qid)) {
+    if (!list.includes(it.id)) (it as any).queueOrder = base + pos++;
+  }
+  broadcast(true);
+  pumpQueue();
+  return true;
 });
 ipcMain.handle('queue:delete', async (_e, id: string) => {
   const idx = queues.findIndex((x) => x.id === id);
@@ -2319,6 +2813,8 @@ ipcMain.handle('queue:delete', async (_e, id: string) => {
 ipcMain.handle('queue:start', async (_e, id: string) => {
   const q = queues.find((x) => x.id === id);
   if (!q) throw new Error('Queue not found');
+  // Empty / all-completed queues have nothing to start — keep them stopped.
+  if (!items.some((i) => (i.queueId || null) === id && i.status !== 'completed')) return q;
   q.running = true;
   // Re-queue its parked files so they can run
   for (const it of items.filter((i) => (i.queueId || null) === id)) {
@@ -2330,8 +2826,9 @@ ipcMain.handle('queue:start', async (_e, id: string) => {
       touchTry(it);
     }
   }
-  // Restarting re-arms the power action.
+  // Restarting re-arms the power + finish actions.
   q.powerFiredAt = null;
+  (q as any).finishFiredAt = null;
   broadcast(true);
   pumpQueue();
   return q;
@@ -2433,7 +2930,9 @@ ipcMain.handle('app:reset-all', async () => {
       if (it?.savePath) fs.unlinkSync(it.savePath + '.jetro.json');
     } catch {}
     try {
-      if ((it as any)?.via === 'ytdlp' && it?.savePath) await cleanupYtDlpTemps(it.savePath);
+      if ((it as any)?.via === 'ytdlp' && it?.savePath) {
+        await cleanupYtDlpTemps(it.savePath, { audioOnly: !!(it as any).audioOnly, includeAltSourceExt: it.status !== 'completed' });
+      }
     } catch {}
     try {
       const cf = String((it as any)?.cookiesFile || '');
@@ -2500,7 +2999,7 @@ function compareVersions(a: string, b: string): number {
 }
 
 function getAppVersion(): string {
-  const FALLBACK = '1.1.0';
+  const FALLBACK = '1.2.0';
   try {
     const electronVer = String((process.versions as any)?.electron || '').trim();
     // package.json is authoritative — app.getVersion() returns the Electron
@@ -2585,7 +3084,7 @@ ipcMain.handle('power:execute', async (_e, queueId?: string) => {
   if (!qItems.length || !qItems.every((i) => i.status === 'completed')) {
     throw new Error('Queue is not fully completed.');
   }
-  runPowerAction(action);
+  runPowerAction(action, !!(q as any).forceTerminate);
   return { ok: true, action };
 });
 
@@ -2884,6 +3383,19 @@ async function ytDlpProxyArgs(pageUrl: string): Promise<string[]> {
   return [];
 }
 
+/** `--referer` for yt-dlp so hotlink-protected sites resolve (origin of the page URL). */
+function ytDlpRefererArgs(pageUrl: string): string[] {
+  try {
+    const u = new URL(String(pageUrl || '').trim());
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return [];
+    const origin = u.origin;
+    if (!origin || origin === 'null') return [];
+    return ['--referer', origin + '/'];
+  } catch {
+    return [];
+  }
+}
+
 function shouldBypassProxyHost(targetUrl: string): boolean {
   try {
     const hostname = new URL(targetUrl).hostname;
@@ -2896,8 +3408,12 @@ function shouldBypassProxyHost(targetUrl: string): boolean {
 const PLAYLIST_MAX_ENTRIES = 50;
 
 ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
-  const url = String(pageUrl || '').trim();
+  let url = String(pageUrl || '').trim();
   if (!url) return { formats: [] as any[], hint: 'empty url' };
+  // Accept bare domains pasted without a scheme (example.com/video/123).
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
+    url = url.startsWith('//') ? `https:${url}` : `https://${url}`;
+  }
   // direct media?
   if (/\.(mp4|webm|mkv|mp3|m4a)(\?|$)/i.test(url)) {
     return { formats: [{ kind: 'video', quality: 'direct', url, ext: 'mp4', height: 0, needsMerge: false }], hint: 'direct media url' };
@@ -2911,7 +3427,7 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
   // Playlist mode: flat list of entries (capped), each becomes its own row.
   if (allowPlaylist) {
     try {
-      const plArgs = ['-J', '--flat-playlist', '--socket-timeout', '10', ...ytDlpJsRuntimeArgs(), ...ck.args, ...proxyArgs];
+      const plArgs = ['-J', '--flat-playlist', '--socket-timeout', '10', ...ytDlpJsRuntimeArgs(), ...ck.args, ...proxyArgs, ...ytDlpRefererArgs(url)];
       if (ffdir) plArgs.push('--ffmpeg-location', ffdir);
       plArgs.push(url);
       const out = await new Promise<any>((resolve) => {
@@ -2950,7 +3466,7 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
       // Single video (or 1-entry playlist): fall through to formats probe below.
     } catch {}
   }
-  const args = ['-J', '--no-playlist', '--socket-timeout', '10', ...ytDlpJsRuntimeArgs(), ...ytDlpYoutubeClientArgs(url, ck.usedCookies), ...ck.args, ...proxyArgs];
+  const args = ['-J', '--no-playlist', '--socket-timeout', '10', ...ytDlpJsRuntimeArgs(), ...ytDlpYoutubeClientArgs(url, ck.usedCookies), ...ck.args, ...proxyArgs, ...ytDlpRefererArgs(url)];
   if (ffdir) args.push('--ffmpeg-location', ffdir);
   args.push(url);
   let probeFailure = '';
@@ -2980,11 +3496,26 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
           if (tbr > 0 && dur > 0) return { bytes: Math.round((tbr * 1000) / 8 * dur), approx: true };
           return { bytes: 0, approx: true };
         };
-        // Progressive (single-file) heights — no cap, keep best URL per height.
+        // Progressive (single-file) heights — kept only for size estimates.
+        // NOTE: extractor CDN URLs are never downloaded directly (see fmts
+        // mapping below): they expire quickly, often need Referer/cookies,
+        // and are frequently HLS (.m3u8) playlists whose text is only a few
+        // KB — downloading them with the segmented engine is what used to
+        // produce "a few bytes, not a video" on adult/cdn sites.
+        const isHlsOrDashFormat = (f: any): boolean => {
+          const proto = String(f?.protocol || '').toLowerCase();
+          const furl = String(f?.url || '').toLowerCase();
+          const fext = String(f?.ext || '').toLowerCase();
+          if (proto.includes('m3u8') || proto.includes('m3u8_native') || proto.includes('hls') || proto.includes('dash') || proto.includes('mpd') || proto.includes('mss')) return true;
+          if (furl.includes('.m3u8') || furl.includes('.mpd') || furl.includes('.m3u8?') || furl.includes('.mpd?')) return true;
+          if (fext === 'm3u8' || fext === 'mpd') return true;
+          return false;
+        };
         const progHeights = new Set<number>();
         const progUrl = new Map<number, any>();
         for (const f of all) {
           if (!f?.url || f.vcodec === 'none' || f.acodec === 'none') continue;
+          if (isHlsOrDashFormat(f)) continue;
           const h = Number(f.height || 0);
           if (h > 0 && !progHeights.has(h)) {
             progHeights.add(h);
@@ -3034,26 +3565,25 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
         const fmts: any[] = [...heights]
           .sort((a, b) => a - b)
           .map((h) => {
+            // All extractor formats go through yt-dlp (page URL + height
+            // selector) — never a direct segmented download of the extracted
+            // CDN URL. Direct URLs expire, need Referer/cookies, or are HLS
+            // playlists (a few KB of text), which is why adult-site qualities
+            // used to complete as tiny non-video files while YouTube (always
+            // split → yt-dlp) worked. yt-dlp re-extracts fresh at download
+            // time with the right headers and HLS/DASH support.
             const p = h > 0 ? progUrl.get(h) : null;
-            if (p) {
-              const s = sizeOf(p);
-              return {
-                kind: 'video',
-                quality: h > 0 ? `${h}p` : 'best',
-                height: h,
-                needsMerge: false,
-                url: String(p.url),
-                ext: String(p.ext || 'mp4'),
-                fps: h > 0 && p?.fps ? Number(p.fps) : undefined,
-                title,
-                estimatedBytes: s.bytes || 0,
-                estimatedApprox: s.bytes > 0 ? s.approx : true,
-              };
-            }
+            const ps = p ? sizeOf(p) : { bytes: 0, approx: true };
             // Split stream: final mp4 ~= best video (+ba) + best audio.
             const v = h > 0 ? bestVideoAtOrBelow(h) : bestVideoAtOrBelow(0) || bestVideoAtOrBelow(4320);
             const vs = v ? sizeOf(v) : { bytes: 0, approx: true };
-            const bytes = (vs.bytes || 0) + (bestAudioSize.bytes || 0);
+            const splitBytes = (vs.bytes || 0) + (bestAudioSize.bytes || 0);
+            // Prefer the progressive size when the site only offers muxed
+            // files (no split streams → splitBytes is 0); otherwise the
+            // split video+audio sum is what `bv+ba` will actually fetch.
+            const useProg = (ps.bytes || 0) > 0 && (splitBytes <= 0 || (ps.bytes || 0) <= splitBytes * 1.5);
+            const bytes = useProg ? ps.bytes : splitBytes;
+            const fps = (p?.fps ? Number(p.fps) : 0) || (v?.fps ? Number(v.fps) : undefined);
             return {
               kind: 'video',
               quality: h > 0 ? `${h}p` : 'best',
@@ -3061,7 +3591,7 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
               needsMerge: true,
               url: '',
               ext: 'mp4',
-              fps: v?.fps ? Number(v.fps) : undefined,
+              fps,
               title,
               estimatedBytes: bytes || 0,
               estimatedApprox: true,
@@ -3206,11 +3736,16 @@ function killYtJob(id: string) {
   ytJobs.delete(id);
   try { clearInterval(j.timer); } catch {}
   try {
-    if (j.proc.pid && !j.proc.killed) {
+    const pid = j.proc.pid;
+    if (pid && !j.proc.killed) {
       if (process.platform === 'win32') {
-        try { execFile('taskkill', ['/pid', String(j.proc.pid), '/T', '/F']); } catch {}
+        // Synchronous tree kill: the old async execFile could return before
+        // taskkill ran, leaving ffmpeg merging/writing after the UI showed
+        // "paused" ("pause doesn't work, download keeps going").
+        try { execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, timeout: 8000, stdio: ['ignore', 'ignore', 'ignore'] }); } catch {}
       }
       try { j.proc.kill('SIGKILL'); } catch {}
+      try { if (!j.proc.killed) (j.proc as any).kill('SIGTERM'); } catch {}
     }
   } catch {}
 }
@@ -3231,11 +3766,13 @@ async function startYtDownload(item: Item) {
   const proxyArgs = await ytDlpProxyArgs(item.url);
   const args = [
     '--no-playlist', '--socket-timeout', '10', '--retries', '3',
+    '--concurrent-fragments', '8',
     ...ytDlpJsRuntimeArgs(),
     '--newline', '--progress', '--progress-delta', '0.1',
     ...ytDlpYoutubeClientArgs(item.url, ck.usedCookies),
     ...ck.args,
     ...proxyArgs,
+    ...ytDlpRefererArgs(item.url),
   ];
   // Segmented downloads are throttled by the global token bucket; yt-dlp
   // manages its own connections, so enforce the same global limit natively.
@@ -3516,8 +4053,11 @@ async function startYtDownload(item: Item) {
  * caller only has a page URL.
  */
 async function addVideoDownload(opts?: any): Promise<Item> {
-  const pageUrl = String(opts?.pageUrl || '').trim();
+  let pageUrl = String(opts?.pageUrl || '').trim();
   if (!pageUrl) throw new Error('Missing video URL');
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(pageUrl)) {
+    pageUrl = pageUrl.startsWith('//') ? `https:${pageUrl}` : `https://${pageUrl}`;
+  }
   const kind = String(opts?.kind || (opts?.audioOnly ? 'audio' : '') || '').toLowerCase() === 'audio' ? 'audio' : 'video';
   const audioOnly = kind === 'audio';
   const rawH = Number(opts?.height || 0);
@@ -3535,7 +4075,7 @@ async function addVideoDownload(opts?: any): Promise<Item> {
   const newId = nowYt.toString(36) + Math.random().toString(36).slice(2, 7);
   if (opts?.replace) {
     await unlinkWithRetries(savePath, 3);
-    try { await cleanupYtDlpTemps(savePath); } catch {}
+    try { await cleanupYtDlpTemps(savePath, { audioOnly, includeAltSourceExt: true }); } catch {}
   }
   const ck = ytDlpCookieArgs(opts, pageUrl);
   if (ck.error) throw new Error(ck.error);
@@ -3576,6 +4116,7 @@ async function addVideoDownload(opts?: any): Promise<Item> {
     lastTryAt: nowYt,
     category: audioOnly ? 'audio' : 'video',
     queueId: validQueueId,
+    queueOrder: validQueueId ? nextQueueOrder(validQueueId) : nowYt,
     batchId: (opts as any)?.batchId ? String((opts as any).batchId) : null,
     batchIndex: Number.isFinite(Number((opts as any)?.batchIndex)) ? Number((opts as any).batchIndex) : 0,
     via: 'ytdlp',

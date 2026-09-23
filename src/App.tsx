@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  FiActivity, FiArchive, FiArrowDown, FiBox, FiCheckCircle, FiChevronDown, FiClipboard,
+  FiActivity, FiArchive, FiArrowDown, FiBox, FiCheckCircle, FiChevronDown, FiChevronLeft, FiChevronRight, FiClipboard,
   FiClock, FiDisc, FiDownloadCloud, FiEdit2, FiExternalLink, FiFileText, FiFilm,
   FiFolder, FiGlobe, FiGrid, FiHardDrive, FiInbox, FiInfo, FiLayers, FiList, FiMoon, FiMusic, FiPause, FiPlay,
   FiPlus, FiRefreshCw, FiRotateCcw, FiSettings, FiSquare, FiSun, FiTool, FiTrash2, FiX, FiXCircle, FiZap,
@@ -28,7 +28,6 @@ import {
 import {
   normalizeQueuePowerAction,
   normalizeTime24h,
-  queuePowerOptions,
   QUEUE_SCHED_DEFAULT_START,
   QUEUE_SCHED_DEFAULT_STOP,
   queuePowerLabel,
@@ -53,6 +52,7 @@ import {
   extOf,
   FILENAME_FALLBACK,
   guessNameFromUrl,
+  isPotentialVideoPageUrl,
   isVideoPageUrl,
   normalizeDownloadUrl,
   sanitizeVideoFilename,
@@ -65,10 +65,12 @@ import {
 import { menuAnchor } from '@/lib/contextMenu';
 import { hasBackend, openExternalUrl } from '@/api/jetro';
 import OsFileIcon from '@/components/OsFileIcon';
+import NoticeDialog from '@/components/NoticeDialog';
 import ThemePicker from '@/components/ThemePicker';
 import LanguagePicker from '@/components/LanguagePicker';
 import { LANGUAGE_MAP } from '@/locale/languages';
 import DownloadAnalytics from '@/components/DownloadAnalytics';
+import QueueScheduler from '@/components/QueueScheduler';
 import useEscape from '@/hooks/useEscape';
 import useContextMenuNudge from '@/hooks/useContextMenuNudge';
 import useSpeedHistory from '@/hooks/useSpeedHistory';
@@ -84,6 +86,21 @@ export default function App() {
   const [query, setQuery] = useState('');
   // Downloads list viewing mode + explorer-like details column layout (persisted).
   const [viewMode, setViewMode] = useState<ViewMode>(() => readViewMode());
+  // Downloads pagination: page size limits rendered rows so huge queues don't
+  // lag the UI. Persisted; 0 = show all (no pagination).
+  const PAGE_SIZE_KEY = 'jetro.pageSize';
+  const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+  const readPageSize = (): number => {
+    try {
+      const raw = Number(localStorage.getItem(PAGE_SIZE_KEY));
+      if (raw === 0) return 0;
+      if (PAGE_SIZE_OPTIONS.includes(raw)) return raw;
+    } catch {}
+    return 25;
+  };
+  const [pageSize, setPageSize] = useState<number>(() => readPageSize());
+  const [page, setPage] = useState(1);
+  const listRef = useRef<HTMLDivElement | null>(null);
   const [detailLayout, setDetailLayout] = useState(() => readDetailLayout());
   const detailOrder = detailLayout.order;
   const detailWidths = detailLayout.widths;
@@ -123,6 +140,15 @@ export default function App() {
   const newUrlRef = useRef('');
   const settingsRef = useRef<any>(null);
   const pendingClipboardRef = useRef('');
+  // Stack of New Download links that arrived while another New Download dialog
+  // was already open (e.g. rapid jetro:// handoffs / pastes). Newest arrival is
+  // shown on top; closing (cancel or successful add) restores the previous one
+  // instead of losing it. LIFO so "close new reveals previous".
+  type PendingAdd = { url: string; savePath: string; queueId: string };
+  const [pendingAdds, setPendingAdds] = useState<PendingAdd[]>([]);
+  const pendingAddsRef = useRef<PendingAdd[]>([]);
+  const savePathRef = useRef('');
+  const newQueueIdRef = useRef('');
   // Browser-extension handoff (jetro://): open New Download + auto-resolve once
   // per arrival. Direct files resolve via the existing debounced probe effect;
   // video pages auto-run detectVideo() (yt-dlp) below.
@@ -149,9 +175,16 @@ export default function App() {
   const [batchRows, setBatchRows] = useState<BatchResolveRow[]>([]);
   const [batchResolving, setBatchResolving] = useState(false);
   const [batchAdding, setBatchAdding] = useState(false);
+  // Manual override: the optional "Is this a video/audio page?" prompt on
+  // page-like links (non-file URLs) flips this on and runs the yt-dlp Detect
+  // flow. Known video pages never need it.
+  const [forceVideo, setForceVideo] = useState(false);
+  // Effective video-page flag: heuristic + manual override.
+  const isVideoPage = isVideoPageUrl(newUrl) || forceVideo;
   // Video + audio (yt-dlp + ffmpeg, no quality cap): detected options for a page URL.
-  // Progressive video entries carry a direct URL (segmented engine); split video
-  // entries and all audio entries are downloaded by yt-dlp (needsMerge).
+  // All page-extracted qualities download via yt-dlp (fresh resolve + headers +
+  // HLS support). Only a true direct media URL (same as the pasted link) uses
+  // the segmented engine.
   const [videoFormats, setVideoFormats] = useState<VideoFormat[]>([]);
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoHint, setVideoHint] = useState('');
@@ -179,13 +212,22 @@ export default function App() {
   const [cookiesFile, setCookiesFile] = useState('');
   const [needsCookies, setNeedsCookies] = useState(false);
   const [cookieError, setCookieError] = useState('');
+  // Derived video flags (recomputed each render).
+  // - hasVideoSelection: a quality was picked from the detected options.
+  // - videoDetectFailed: Detect ran but found no playable formats and no
+  //   playlist — the link falls back to a plain file download.
+  const hasVideoSelection = !!selectedVideoKind || selectedVideoHeight > 0 || !!selectedVideoUrl;
+  const videoDetectFailed = !videoLoading && videoFormats.length === 0 && !playlist && !!videoHint && !hasVideoSelection;
+  // - videoResolved: detected options (or a pick) exist — the video flow owns
+  //   the download (queue note); otherwise the file flow does.
+  const videoResolved = videoFormats.length > 0 || hasVideoSelection || !!playlist;
   const [binStatus, setBinStatus] = useState<BinaryStatus | null>(null);
   const [binRefreshing, setBinRefreshing] = useState(false);
-  const [settings, setSettings] = useState<any>({ maxConnections: 8, maxConcurrentDownloads: 3, downloadDir: '', speedLimitKBps: 0, proxyMode: 'system', proxyType: 'http', proxyHost: '', proxyPort: 8080, proxyUser: '', proxyPass: '', proxyBypass: 'localhost,127.0.0.1,::1', closeAction: 'ask', theme: 'system', autoCaptureClipboard: true, autoRetryEnabled: true, maxRetries: 3, retryDelaySec: 5, checkUpdatesOnStart: true, launchAtStartup: false });
+  const [settings, setSettings] = useState<any>({ maxConnections: 8, maxConcurrentDownloads: 3, downloadDir: '', speedLimitKBps: 0, proxyMode: 'system', proxyType: 'http', proxyHost: '', proxyPort: 8080, proxyUser: '', proxyPass: '', proxyBypass: 'localhost,127.0.0.1,::1', closeAction: 'ask', theme: 'system', autoCaptureClipboard: true, showCompletePopup: true, autoRetryEnabled: true, maxRetries: 3, retryDelaySec: 5, checkUpdatesOnStart: true, launchAtStartup: false });
   const [isPortable, setIsPortable] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; updateAvailable: boolean; url: string; error?: string } | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
-  const [appVersion, setAppVersion] = useState('1.1.0');
+  const [appVersion, setAppVersion] = useState('1.2.0');
   // Per-session dismissal for the update banner (reset when a newer tag appears).
   const [updateDismissed, setUpdateDismissed] = useState<string | null>(null);
   const showUpdateBanner = !!updateInfo?.updateAvailable && updateDismissed !== updateInfo.latest;
@@ -337,14 +379,11 @@ export default function App() {
   // ("+ New queue…" inside New Download / video section). Null = default
   // behavior (sidebar: jump filter there; item rows use pendingQueueMove).
   const [queueCreateReturn, setQueueCreateReturn] = useState<null | 'newDownload' | 'video'>(null);
-  const [showQueueModal, setShowQueueModal] = useState<null | { mode: 'create' | 'edit'; queueId?: string }>(null);
+  const [showQueueModal, setShowQueueModal] = useState<null | { mode: 'create' }>(null);
   const [qName, setQName] = useState('');
   const [qNameError, setQNameError] = useState('');
-  const [qSchedOn, setQSchedOn] = useState(false);
-  const [qStart, setQStart] = useState(QUEUE_SCHED_DEFAULT_START);
-  const [qStop, setQStop] = useState(QUEUE_SCHED_DEFAULT_STOP);
-  const [qSchedError, setQSchedError] = useState('');
-  const [qPower, setQPower] = useState<QueuePowerAction>('nothing');
+  // Scheduler window (IDM-style): queueId being edited, null = closed.
+  const [showScheduler, setShowScheduler] = useState<string | null>(null);
   // Per-queue power countdown (60s, cancellable) after a queue fully completes.
   const [powerDialog, setPowerDialog] = useState<{ queueId: string; queueName: string; action: QueuePowerAction; secondsLeft: number } | null>(null);
 
@@ -357,6 +396,12 @@ export default function App() {
   // remove / delete confirmation ({ id, deleteFile }: deleteFile removes the file from disk)
   const [pendingRemove, setPendingRemove] = useState<{ id: string; deleteFile: boolean } | null>(null);
 
+  // In-app notice popup (replaces window.alert: native popups show the
+  // lowercase package name as title and always render LTR).
+  const [notice, setNotice] = useState<string | null>(null);
+  // In-app delete-queue confirmation (replaces window.confirm for the same reason).
+  const [pendingDeleteQueue, setPendingDeleteQueue] = useState<Queue | null>(null);
+
   // file-exists collision: target file already on disk, ask replace / rename / cancel
   const [pendingCollision, setPendingCollision] = useState<null | {
     kind: 'file' | 'video'; url: string; filename: string; dir: string; queueId: string; height: number; videoKind?: 'video' | 'audio'; estimatedBytes?: number;
@@ -366,8 +411,12 @@ export default function App() {
   const [showClosePrompt, setShowClosePrompt] = useState(false);
   const [closeRemember, setCloseRemember] = useState(false);
 
-  // download-complete popup queue (shows newest completions one at a time)
+  // Single download-complete popup: fresh completions aggregate into one
+  // list (main file + "+n more finished"). One dismiss clears them all —
+  // no sequential popups requiring a click per file.
   const [completedQueue, setCompletedQueue] = useState<Item[]>([]);
+  // Expanded state for the "+n more finished" toggle (scrollable rest-of-queue list).
+  const [completeExpanded, setCompleteExpanded] = useState(false);
   const seenCompletedRef = useRef<Set<string>>(new Set());
   // Becomes true once the initial download list has been seeded into
   // seenCompletedRef, so pre-existing completions never trigger a popup.
@@ -458,19 +507,37 @@ export default function App() {
     });
     // Browser extension (jetro://add?url=..): focus already handled main-side.
     // Open New Download pre-filled; auto-resolve runs in the effect below once
-    // newUrl state has flushed. Explicit user intent — always replaces.
+    // newUrl state has flushed. If a dialog is already open, stash its link
+    // underneath so closing the new one reveals the previous (LIFO stack).
     const off7 = window.jetro!.onExternalUrl?.((info) => {
       const url = String((info as any)?.url || '').trim();
       if (!url || url.length > 2048 || /\s/.test(url)) return;
+      const cur = (newUrlRef.current || '').trim();
+      if (showAddRef.current && cur && cur !== url) {
+        const stack = pendingAddsRef.current || [];
+        if (!(stack.length && stack[stack.length - 1].url === cur)) {
+          const next = [...stack, {
+            url: cur,
+            savePath: savePathRef.current || '',
+            queueId: newQueueIdRef.current || '',
+          }].slice(-20);
+          pendingAddsRef.current = next;
+          setPendingAdds(next);
+        }
+      }
       pendingClipboardRef.current = url;
       filenameTouchedRef.current = false;
       setUrlError('');
       try {
         setSavePath(settingsRef.current?.downloadDir || '');
+        savePathRef.current = settingsRef.current?.downloadDir || '';
       } catch {}
       setNewQueueId('');
+      newQueueIdRef.current = '';
       setShowAdd(true);
+      showAddRef.current = true;
       setNewUrl(url);
+      newUrlRef.current = url;
       externalAutoRef.current = { url, nonce: Date.now() + Math.random() };
     });
     return () => {
@@ -495,6 +562,15 @@ export default function App() {
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+  useEffect(() => {
+    savePathRef.current = savePath;
+  }, [savePath]);
+  useEffect(() => {
+    newQueueIdRef.current = newQueueId;
+  }, [newQueueId]);
+  useEffect(() => {
+    pendingAddsRef.current = pendingAdds;
+  }, [pendingAdds]);
   useEscape(!!ctx, () => setCtx(null));
   useEscape(!!(itemCtx || renameState || propsId || analyticsId), () => {
     if (renameState || propsId || analyticsId) return; // modals handle their own Escape
@@ -509,15 +585,21 @@ export default function App() {
   // Detect newly completed downloads and queue a popup.
   // Downloads already completed before this session was loaded are seeded
   // into seenCompletedRef above, so only fresh completions pop up.
+  // When the popup is disabled in Settings, completions are still marked seen
+  // (so re-enabling later doesn't flood old popups) but nothing is queued.
   useEffect(() => {
     if (!initialLoadDoneRef.current) return;
     const newly = items.filter((i) => i.status === 'completed' && !seenCompletedRef.current.has(i.id));
     if (newly.length) {
       newly.forEach((i) => seenCompletedRef.current.add(i.id));
-      setCompletedQueue((prev) => {
-        const prevIds = new Set(prev.map((p) => p.id));
-        return [...prev, ...newly.filter((n) => !prevIds.has(n.id))];
-      });
+      if (settingsRef.current && (settingsRef.current as any).showCompletePopup === false) {
+        // popup disabled — ids already marked seen above, nothing to queue.
+      } else {
+        setCompletedQueue((prev) => {
+          const prevIds = new Set(prev.map((p) => p.id));
+          return [...prev, ...newly.filter((n) => !prevIds.has(n.id))];
+        });
+      }
     }
     // prune ids for removed items
     if (seenCompletedRef.current.size > 500) {
@@ -543,8 +625,13 @@ export default function App() {
     return () => clearTimeout(t);
   }, [powerDialog]);
 
-  // Escape dismisses the complete popup
-  useEscape(completedQueue.length > 0, () => setCompletedQueue((prev) => prev.slice(1)));
+  // Escape dismisses the complete popup (all aggregated files at once)
+  useEscape(completedQueue.length > 0, () => setCompletedQueue([]));
+
+  // Collapse the "+n more" list once the popup is fully dismissed.
+  useEffect(() => {
+    if (completedQueue.length === 0) setCompleteExpanded(false);
+  }, [completedQueue.length]);
 
   const queueMap = useMemo(() => new Map(queues.map((q) => [q.id, q])), [queues]);
   const queueById = (id: string | null | undefined) => (id ? queueMap.get(id) : undefined);
@@ -608,6 +695,42 @@ export default function App() {
       return ((va as number) - (vb as number)) * dir;
     });
   }, [items, filter, query, sort, queues]);
+
+  // ---------- Downloads pagination ----------
+  const totalPages = useMemo(
+    () => (pageSize === 0 ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize))),
+    [filtered.length, pageSize]
+  );
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const paged = useMemo(
+    () => (pageSize === 0 ? filtered : filtered.slice((safePage - 1) * pageSize, safePage * pageSize)),
+    [filtered, safePage, pageSize]
+  );
+  const pageStart = filtered.length === 0 ? 0 : pageSize === 0 ? 1 : (safePage - 1) * pageSize + 1;
+  const pageEnd = pageSize === 0 ? filtered.length : Math.min(filtered.length, safePage * pageSize);
+  // Compact page-number window: all pages when few, otherwise 1 … window … last.
+  const pageNumbers = useMemo<(number | '…')[]>(() => {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+    const set = new Set<number>([1, 2, safePage - 1, safePage, safePage + 1, totalPages - 1, totalPages]);
+    const nums = [...set].filter((n) => n >= 1 && n <= totalPages).sort((a, b) => a - b);
+    const out: (number | '…')[] = [];
+    for (let i = 0; i < nums.length; i++) {
+      out.push(nums[i]);
+      if (i < nums.length - 1 && nums[i + 1] - nums[i] > 1) out.push('…');
+    }
+    return out;
+  }, [safePage, totalPages]);
+  const goToPage = (p: number) => {
+    setPage(Math.min(Math.max(1, p), totalPages));
+    try { listRef.current?.scrollTo({ top: 0 }); } catch { try { if (listRef.current) listRef.current.scrollTop = 0; } catch {} }
+  };
+  // Persist page size; reset to first page on filter/search/size change; clamp
+  // when deletions shrink the list.
+  useEffect(() => {
+    try { localStorage.setItem(PAGE_SIZE_KEY, String(pageSize)); } catch {}
+  }, [pageSize]);
+  useEffect(() => { setPage(1); }, [filter, query, pageSize]);
+  useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
 
   // Single-select: click selects one download, clicking it again deselects.
   const toggleSelect = (e: React.MouseEvent, id: string) => {
@@ -743,7 +866,7 @@ export default function App() {
       setBatchError(t.batch.nothingToAdd);
       return;
     }
-    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
+    if (!hasBackend()) { setNotice(t.common.runViaElectron); return; }
     setBatchAdding(true);
     setBatchError('');
     try {
@@ -758,7 +881,9 @@ export default function App() {
           try { return new URL(toAdd[0]).hostname.replace(/^www\./i, ''); } catch { return ''; }
         })();
         const q = await window.jetro!.createQueue(
-          host ? `Batch – ${host} (${toAdd.length} files)`.slice(0, 60) : `Batch (${toAdd.length} files)`,
+          // Host only — never bake the file count into the name (it goes
+          // stale as soon as files are added/removed; badges show it live).
+          host ? `Batch – ${host}`.slice(0, 60) : 'Batch',
         );
         for (const u of toAdd) {
           await window.jetro!.addDownload(u, {
@@ -822,9 +947,99 @@ export default function App() {
     return name;
   };
 
+  // ---------- New Download stacking (previous links survive new arrivals) ----------
+  // Clears per-link transient state so a swapped-in URL re-resolves fresh.
+  // Does NOT touch showAdd / newUrl / savePath / newQueueId (caller sets those).
+  // Pasted cookies are kept (same as URL-change behavior); only the
+  // needs-cookies flag + error are reset until yt-dlp reports again.
+  const clearAddTransientForSwap = () => {
+    setPendingCollision(null);
+    setUrlError('');
+    setFilenameError('');
+    setNewFilename('');
+    setProbedFilename('');
+    setProbedOk(false);
+    setPendingFormatConfirm(null);
+    setVideoFormats([]);
+    setVideoHint('');
+    setVideoDetail('');
+    setVideoTitle('');
+    setVideoLoading(false);
+    setSelectedVideoUrl('');
+    setSelectedVideoHeight(0);
+    setSelectedVideoNeedsMerge(false);
+    setSelectedVideoKind('');
+    setSelectedVideoExt('');
+    setSelectedVideoEstimatedBytes(0);
+    setVideoSubtitles(false);
+    setVideoQueueId('');
+    setPlaylist(null);
+    setPlaylistSelected(new Set());
+    setPlaylistAdding(false);
+    filenameTouchedRef.current = false;
+    setNeedsCookies(false);
+    setCookieError('');
+    setVideoProxyHint(false);
+    setShowVideoDetail(false);
+    setForceVideo(false);
+  };
+
+  const stashCurrentAddIfNeeded = (incomingUrl: string) => {
+    const cur = (newUrlRef.current || '').trim();
+    const clean = (incomingUrl || '').trim();
+    if (!showAddRef.current || !cur || !clean || cur === clean) return;
+    const stack = pendingAddsRef.current || [];
+    // Avoid stacking the same URL twice on top.
+    if (stack.length && stack[stack.length - 1].url === cur) return;
+    // Cap the stack so a flood of links can't grow memory unbounded.
+    const entry: PendingAdd = {
+      url: cur,
+      savePath: savePathRef.current || '',
+      queueId: newQueueIdRef.current || '',
+    };
+    const next = [...stack, entry].slice(-20);
+    pendingAddsRef.current = next;
+    setPendingAdds(next);
+  };
+
+  // Close the top New Download dialog: if older links are stacked underneath,
+  // restore the most recent one (LIFO) and keep the dialog open; otherwise
+  // truly close. Returns true when a previous link was restored.
+  const restoreNextAddOrClose = (): boolean => {
+    const stack = pendingAddsRef.current || [];
+    if (stack.length) {
+      const nextStack = [...stack];
+      const prev = nextStack.pop()!;
+      pendingAddsRef.current = nextStack;
+      setPendingAdds(nextStack);
+      clearAddTransientForSwap();
+      pendingClipboardRef.current = prev.url;
+      setSavePath(prev.savePath || settingsRef.current?.downloadDir || '');
+      savePathRef.current = prev.savePath || settingsRef.current?.downloadDir || '';
+      setNewQueueId(prev.queueId || '');
+      newQueueIdRef.current = prev.queueId || '';
+      setShowAdd(true);
+      showAddRef.current = true;
+      setNewUrl(prev.url);
+      newUrlRef.current = prev.url;
+      externalAutoRef.current = { url: prev.url, nonce: Date.now() + Math.random() };
+      return true;
+    }
+    setShowAdd(false);
+    showAddRef.current = false;
+    return false;
+  };
+
   const resetAddDialog = () => {
+    // Successful add closes the top dialog — reveal the previous stacked link
+    // (if any) instead of dropping it.
+    if ((pendingAddsRef.current || []).length) {
+      restoreNextAddOrClose();
+      return;
+    }
     setPendingCollision(null);
     setNewUrl('');
+    newUrlRef.current = '';
     setUrlError('');
     setNewFilename('');
     setFilenameError('');
@@ -852,12 +1067,15 @@ export default function App() {
     setNeedsCookies(false);
     setCookieError('');
     setSavePath('');
+    savePathRef.current = '';
     setNewQueueId('');
+    newQueueIdRef.current = '';
     setShowAdd(false);
+    showAddRef.current = false;
   };
 
   const doAdd = async (u: string, finalName: string, presetSavePath?: string, presetQueueId?: string, replace = false) => {
-    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
+    if (!hasBackend()) { setNotice(t.common.runViaElectron); return; }
     setAdding(true);
     setUrlError('');
     try {
@@ -880,7 +1098,7 @@ export default function App() {
   };
 
   const startVideoDownload = async (pageUrl: string, filename: string, folder: string, height: number, kind: 'video' | 'audio' = 'video', replace = false, estimatedBytes?: number, queueId?: string) => {
-    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
+    if (!hasBackend()) { setNotice(t.common.runViaElectron); return; }
     setAdding(true);
     setUrlError('');
     try {
@@ -919,7 +1137,7 @@ export default function App() {
       setUrlError(t.newDownload.needEntryQuality);
       return;
     }
-    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
+    if (!hasBackend()) { setNotice(t.common.runViaElectron); return; }
     if (!cookiesReady()) return;
     setPlaylistAdding(true);
     setUrlError('');
@@ -1020,35 +1238,49 @@ export default function App() {
   };
 
   const addDl = async (url?: string, presetSavePath?: string, presetQueueId?: string) => {
-    if (!hasBackend()) { alert(t.common.runViaElectron); return; }
+    if (!hasBackend()) { setNotice(t.common.runViaElectron); return; }
     // Video/audio path: a quality was picked from probeVideo.
-    // - Progressive video: direct media URL via the segmented engine (fast).
-    // - Split video or any audio: page URL via yt-dlp (download+merge/extract).
-    if (!url && isVideoPageUrl(newUrl)) {
-      if (!selectedVideoKind && !selectedVideoHeight && !selectedVideoUrl) {
-        setUrlError(t.newDownload.needQuality);
-        return;
-      }
+    // All page-extracted formats go via yt-dlp (page URL + height selector):
+    // extracted CDN URLs expire quickly, often need Referer/cookies, and are
+    // frequently HLS (.m3u8) playlists — fetching them with the segmented
+    // engine saved a few KB of text/403 HTML instead of video. Only a true
+    // direct media URL (user pasted the file itself) may use segmented.
+    if (!url && isVideoPage) {
+      if (!hasVideoSelection) {
+        // Detect ran but found no playable formats (unsupported/private page):
+        // fall through to a plain file download instead of blocking the user.
+        if (!videoDetectFailed) {
+          setUrlError(t.newDownload.needQuality);
+          return;
+        }
+      } else {
       if (!cookiesReady()) return;
       const isAudio = selectedVideoKind === 'audio';
       const defaultExt = isAudio ? 'm4a' : 'mp4';
       const fallback = videoTitle ? sanitizeVideoFilename(videoTitle, extOf(newFilename) || defaultExt) : '';
       const checkedV = validateFilename((newFilename || '').trim() || fallback || (isAudio ? 'audio.m4a' : 'video.mp4'));
       if (!checkedV) return;
-      if (isAudio || selectedVideoNeedsMerge || !selectedVideoUrl) {
+      const selTrimmed = (selectedVideoUrl || '').trim();
+      const pageTrimmed = newUrl.trim();
+      // True direct file: the detected URL is the URL the user pasted
+      // (e.g. https://cdn.example.com/clip.mp4). Anything else is an
+      // extractor CDN URL and must go through yt-dlp for a fresh resolve.
+      const isTrueDirect = !!selTrimmed && !!pageTrimmed && selTrimmed === pageTrimmed;
+      if (isAudio || selectedVideoNeedsMerge || !selTrimmed || !isTrueDirect) {
         const folderV = (savePath || settings.downloadDir || '').trim();
         await requestAdd(newUrl.trim(), checkedV, folderV || undefined, undefined, { isVideo: true, height: selectedVideoHeight || 0, videoKind: isAudio ? 'audio' : 'video', estimatedBytes: selectedVideoEstimatedBytes || 0 });
         return;
       }
       let direct: string;
       try {
-        direct = normalizeDownloadUrl(selectedVideoUrl, t.urlError);
+        direct = normalizeDownloadUrl(selTrimmed, t.urlError);
       } catch (e: any) {
         setUrlError(e?.message || t.newDownload.linkExpired);
         return;
       }
       await requestAdd(direct, checkedV, presetSavePath, presetQueueId);
       return;
+      }
     }
     const raw = (url || newUrl).trim();
     if (!raw) {
@@ -1146,6 +1378,7 @@ export default function App() {
     setNeedsCookies(false);
     setCookieError('');
     setShowVideoDetail(false);
+    setForceVideo(false);
   }, [showAdd]);
 
   // Collapse the raw error log whenever a new resolve produces different
@@ -1267,19 +1500,38 @@ export default function App() {
       const url = extractPastedUrl(raw);
       if (!url) return;
       e.preventDefault();
+      // Stack the current link underneath so it reappears when this one closes.
+      const cur = (newUrlRef.current || '').trim();
+      if (showAddRef.current && cur && cur !== url.trim()) {
+        const stack = pendingAddsRef.current || [];
+        if (!(stack.length && stack[stack.length - 1].url === cur)) {
+          const next = [...stack, {
+            url: cur,
+            savePath: savePathRef.current || '',
+            queueId: newQueueIdRef.current || '',
+          }].slice(-20);
+          pendingAddsRef.current = next;
+          setPendingAdds(next);
+        }
+      }
       pendingClipboardRef.current = url;
       filenameTouchedRef.current = false;
       setUrlError('');
       if (!showAddRef.current) {
         try {
           setSavePath(settingsRef.current?.downloadDir || '');
+          savePathRef.current = settingsRef.current?.downloadDir || '';
         } catch {
           // keep current save path on failure
         }
         setNewQueueId('');
+        newQueueIdRef.current = '';
         setShowAdd(true);
+        showAddRef.current = true;
       }
       setNewUrl(url);
+      newUrlRef.current = url;
+      externalAutoRef.current = { url, nonce: Date.now() + Math.random() };
     };
     window.addEventListener('paste', onPaste as EventListener);
     return () => window.removeEventListener('paste', onPaste as EventListener);
@@ -1307,6 +1559,7 @@ export default function App() {
     setPlaylist(null);
     setPlaylistSelected(new Set());
     setPlaylistAdding(false);
+    setForceVideo(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [newUrl]);
 
@@ -1356,6 +1609,14 @@ export default function App() {
         if (!filenameTouchedRef.current) {
           const t = String((r as any)?.title || fmts[0]?.title || '');
           if (t) setNewFilename(sanitizeVideoFilename(t, f.ext));
+        }
+      } else if (fmts.length > 1) {
+        // Resolved to video/audio: rename the default file name to the
+        // detected title (unless the user already typed their own name).
+        // Picking a quality below re-renames with that quality's container.
+        if (!filenameTouchedRef.current) {
+          const t = String((r as any)?.title || fmts[0]?.title || '');
+          if (t) setNewFilename(sanitizeVideoFilename(t, String(fmts[0]?.ext || 'mp4')));
         }
       } else if (!fmts.length && r?.hint) {
         setUrlError('');
@@ -1426,7 +1687,7 @@ export default function App() {
       setProbedOk(false);
       return;
     }
-    if (isVideoPageUrl(raw)) {
+    if (isVideoPageUrl(raw) || forceVideo) {
       setProbedFilename('');
       setProbedOk(false);
       return;
@@ -1457,7 +1718,7 @@ export default function App() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [newUrl, showAdd]);
+  }, [newUrl, showAdd, forceVideo]);
 
   // Escape dismisses the format-confirm dialog (back to the New Download dialog).
   useEscape(!!pendingFormatConfirm, () => setPendingFormatConfirm(null));
@@ -1495,25 +1756,39 @@ export default function App() {
     if (hasBackend()) {
       const q = await window.jetro!.createQueue(clean);
       await refreshQueues();
-      return q;
+      return q as Queue;
     }
+    const now = Date.now();
     const q: Queue = {
-      id: 'q' + Date.now().toString(36),
+      id: 'q' + now.toString(36),
       name: clean,
       running: false,
-      maxConcurrent: Math.min(10, Math.max(1, Math.round(Number(settings.maxConcurrentDownloads) || 3))),
+      maxConcurrent: 1,
       schedulerEnabled: false,
-      scheduleStart: '22:00',
-      scheduleStop: '07:00',
-      createdAt: Date.now(),
-      afterComplete: qPower,
+      scheduleStart: QUEUE_SCHED_DEFAULT_START,
+      scheduleStop: QUEUE_SCHED_DEFAULT_STOP,
+      createdAt: now,
+      afterComplete: 'nothing',
       powerFiredAt: null,
+      startOnStartup: false,
+      startAtEnabled: false,
+      stopAtEnabled: false,
+      scheduleMode: 'daily',
+      onceDate: '',
+      weekdays: [true, true, true, true, true, true, true],
+      retriesPerFile: null,
+      openWhenDone: '',
+      exitAppWhenDone: false,
+      forceTerminate: false,
     };
     setQueues((p) => [...p, q]);
     return q;
   };
 
   const handleStartStopQueue = async (q: Queue) => {
+    // Finished/empty queues have nothing to start: ignore start requests.
+    // (Stop is left to the backend; the buttons stay disabled via canStart/StopQueue.)
+    if (!q.running && !items.some((i) => (i.queueId || null) === q.id && i.status !== 'completed')) return;
     if (hasBackend()) {
       if (q.running) await window.jetro!.stopQueue(q.id);
       else await window.jetro!.startQueue(q.id);
@@ -1524,7 +1799,12 @@ export default function App() {
   };
 
   const handleDeleteQueue = async (q: Queue) => {
-    if (!confirm(t.queueMenu.deleteConfirm(q.name))) return;
+    setPendingDeleteQueue(q);
+    setCtx(null);
+  };
+
+  const doDeleteQueue = async (q: Queue) => {
+    setPendingDeleteQueue(null);
     if (hasBackend()) {
       await window.jetro!.deleteQueue(q.id);
       await refreshQueues();
@@ -1533,17 +1813,15 @@ export default function App() {
       setItems((p) => p.map((it) => ((it.queueId || null) === q.id ? { ...it, queueId: null } : it)));
     }
     if (filter === `queue:${q.id}`) setFilter('all');
+    // Deleting the queue open in the Scheduler closes it; deleting
+    // another queue keeps the window open (list refreshes via onQueues).
+    if (showScheduler === q.id) setShowScheduler(null);
     setCtx(null);
   };
 
   const openCreateModal = () => {
     setQName('');
     setQNameError('');
-    setQSchedOn(false);
-    setQStart(QUEUE_SCHED_DEFAULT_START);
-    setQStop(QUEUE_SCHED_DEFAULT_STOP);
-    setQSchedError('');
-    setQPower('nothing');
     setPendingQueueMove(null);
     setQueueCreateReturn(null);
     setShowQueueModal({ mode: 'create' });
@@ -1556,11 +1834,6 @@ export default function App() {
   const openCreateQueueFor = (returnTarget: null | 'newDownload' | 'video', moveItemId?: string | null) => {
     setQName('');
     setQNameError('');
-    setQSchedOn(false);
-    setQStart(QUEUE_SCHED_DEFAULT_START);
-    setQStop(QUEUE_SCHED_DEFAULT_STOP);
-    setQSchedError('');
-    setQPower('nothing');
     setPendingQueueMove(moveItemId || null);
     setQueueCreateReturn(returnTarget);
     setShowQueueModal({ mode: 'create' });
@@ -1568,26 +1841,13 @@ export default function App() {
     setItemCtx(null);
   };
 
+  // Edit opens the full Scheduler window (Schedule + Edit Files tabs).
   const openEditModal = (q: Queue) => {
-    setQName(q.name);
-    setQNameError('');
-    setQSchedOn(!!q.schedulerEnabled);
-    setQStart(normalizeTime24h(q.scheduleStart) || QUEUE_SCHED_DEFAULT_START);
-    setQStop(normalizeTime24h(q.scheduleStop) || QUEUE_SCHED_DEFAULT_STOP);
-    setQSchedError('');
-    setQPower(normalizeQueuePowerAction((q as any).afterComplete));
-    setShowQueueModal({ mode: 'edit', queueId: q.id });
+    setShowScheduler(q.id);
     setCtx(null);
   };
 
-  const validateQueueSchedule = (enabled: boolean, startRaw: string, stopRaw: string): { start: string; stop: string; error: string } => {
-    if (!enabled) return { start: QUEUE_SCHED_DEFAULT_START, stop: QUEUE_SCHED_DEFAULT_STOP, error: '' };
-    const start = normalizeTime24h(startRaw);
-    const stop = normalizeTime24h(stopRaw);
-    if (!start || !stop) return { start: start || '', stop: stop || '', error: t.queueModal.scheduleError };
-    return { start, stop, error: '' };
-  };
-
+  // Name-only create: schedule/time/power are edited later in the Scheduler.
   const saveQueueModal = async () => {
     const clean = qName.trim();
     if (!clean) {
@@ -1595,74 +1855,113 @@ export default function App() {
       return;
     }
     setQNameError('');
-    const sched = validateQueueSchedule(qSchedOn, qStart, qStop);
-    if (sched.error) {
-      setQSchedError(sched.error);
-      return;
-    }
-    setQSchedError('');
     try {
-      if (showQueueModal?.mode === 'create') {
-        const q = await handleCreateQueue(clean);
-        // apply extra fields if user changed them
-        if (hasBackend() && q) {
-          await window.jetro!.updateQueue(q.id, {
-            schedulerEnabled: qSchedOn,
-            scheduleStart: sched.start,
-            scheduleStop: sched.stop,
-            afterComplete: qPower,
-          });
-          await refreshQueues();
-        } else if (q) {
-          setQueues((p) => p.map((x) => (x.id === q.id ? { ...x, schedulerEnabled: qSchedOn, scheduleStart: sched.start, scheduleStop: sched.stop, afterComplete: qPower } : x)));
-        }
-        // Created from a download's right-click menu / item row dropdown: move in.
-        if (q && pendingQueueMove) {
-          await moveItemToQueue(pendingQueueMove, q.id);
-          setPendingQueueMove(null);
-          setQueueCreateReturn(null);
-        } else if (q && queueCreateReturn === 'newDownload') {
-          setNewQueueId(q.id);
-          setQueueCreateReturn(null);
-        } else if (q && queueCreateReturn === 'video') {
-          setVideoQueueId(q.id);
-          setQueueCreateReturn(null);
-        } else if (q && !pendingQueueMove && !queueCreateReturn) {
-          setFilter(`queue:${q.id}`);
-        }
-      } else if (showQueueModal?.mode === 'edit' && showQueueModal.queueId) {
-        const id = showQueueModal.queueId;
-        if (hasBackend()) {
-          await window.jetro!.updateQueue(id, {
-            name: clean,
-            schedulerEnabled: qSchedOn,
-            scheduleStart: sched.start,
-            scheduleStop: sched.stop,
-            afterComplete: qPower,
-          });
-          await refreshQueues();
-        } else {
-          setQueues((p) => p.map((x) => (x.id === id ? { ...x, name: clean, schedulerEnabled: qSchedOn, scheduleStart: sched.start, scheduleStop: sched.stop, afterComplete: qPower, powerFiredAt: null } : x)));
-        }
+      const q = await handleCreateQueue(clean);
+      // Created from a download's right-click menu / item row dropdown: move in.
+      if (q && pendingQueueMove) {
+        await moveItemToQueue(pendingQueueMove, q.id);
+        setPendingQueueMove(null);
+        setQueueCreateReturn(null);
+      } else if (q && queueCreateReturn === 'newDownload') {
+        setNewQueueId(q.id);
+        setQueueCreateReturn(null);
+      } else if (q && queueCreateReturn === 'video') {
+        setVideoQueueId(q.id);
+        setQueueCreateReturn(null);
+      } else if (q && !pendingQueueMove && !queueCreateReturn) {
+        setFilter(`queue:${q.id}`);
       }
       setShowQueueModal(null);
     } catch (e: any) {
-      const msg = e?.message || t.queueModal.couldNotSave;
-      if (/HH:MM|24-hour|Start|Stop/i.test(msg)) setQSchedError(msg);
-      else setQNameError(msg);
+      setQNameError(e?.message || t.queueModal.couldNotSave);
     }
   };
 
+  // ---------- Scheduler window actions ----------
+  const saveSchedulerQueue = async (id: string, patch: Record<string, unknown>) => {
+    if (hasBackend()) {
+      await window.jetro!.updateQueue(id, patch);
+      await refreshQueues();
+      return;
+    }
+    setQueues((prev) => prev.map((x) => {
+      if (x.id !== id) return x;
+      const p = patch as Partial<Queue>;
+      const schedOn = (p as any).startAtEnabled || (p as any).stopAtEnabled;
+      return {
+        ...x,
+        ...(p.name !== undefined ? { name: String(p.name) } : {}),
+        ...(p.maxConcurrent !== undefined ? { maxConcurrent: Math.min(10, Math.max(1, Math.round(Number((p as any).maxConcurrent) || 1))) } : {}),
+        ...(schedOn !== undefined ? { schedulerEnabled: !!((p as any).startAtEnabled || (p as any).stopAtEnabled) } : {}),
+        ...patch,
+        powerFiredAt: null,
+      } as Queue;
+    }));
+  };
+
+  const reorderSchedulerQueue = async (queueId: string, orderedIds: string[]) => {
+    if (hasBackend() && typeof (window.jetro as any)?.reorderQueue === 'function') {
+      await (window.jetro as any).reorderQueue(queueId, orderedIds);
+      return;
+    }
+    // Web preview fallback: stamp queueOrder locally in list order.
+    const base = Date.now();
+    setItems((prev) => {
+      const pos = new Map(orderedIds.map((id, i) => [id, base + i]));
+      return prev.map((it) => ((it.queueId || null) === queueId && pos.has(it.id)
+        ? { ...it, queueOrder: pos.get(it.id) }
+        : it));
+    });
+  };
+
+  const removeSchedulerItem = async (id: string, deleteFile: boolean) => {
+    if (hasBackend()) {
+      await window.jetro!.remove(id, deleteFile);
+      return;
+    }
+    setItems((prev) => prev.filter((it) => it.id !== id));
+  };
+
+  const startSchedulerQueue = async (q: Queue) => {
+    if (hasBackend()) {
+      try {
+        await window.jetro!.startQueue(q.id);
+        await refreshQueues();
+      } catch {}
+      return;
+    }
+    setQueues((prev) => prev.map((x) => (x.id === q.id ? { ...x, running: true } : x)));
+    setItems((prev) => prev.map((it) => ((it.queueId || null) === q.id && (it.status === 'paused' || it.status === 'error')
+      ? { ...it, status: 'queued' as Item['status'] }
+      : it)));
+  };
+
+  const stopSchedulerQueue = async (q: Queue) => {
+    if (hasBackend()) {
+      try {
+        await window.jetro!.stopQueue(q.id);
+        await refreshQueues();
+      } catch {}
+      return;
+    }
+    setQueues((prev) => prev.map((x) => (x.id === q.id ? { ...x, running: false } : x)));
+  };
+
   const moveItemToQueue = async (itemId: string, queueId: string | null) => {
+    // Optimistic: reflect the move instantly so the sidebar counts, the
+    // card/details queue selects and the toolbar start/stop menus all update
+    // in the same render. The backend 'dl:update' event confirms it right
+    // after (active downloads can't reach here — their move controls are
+    // disabled — so the backend never refuses these moves).
+    setItems((p) => p.map((it) => (it.id === itemId ? { ...it, queueId } : it)));
     if (hasBackend()) {
       try {
         await window.jetro!.moveToQueue(itemId, queueId);
       } catch (e: any) {
-        alert(e?.message || t.itemMenu.couldNotMove);
+        setNotice(e?.message || t.itemMenu.couldNotMove);
       }
       return;
     }
-    setItems((p) => p.map((it) => (it.id === itemId ? { ...it, queueId } : it)));
   };
 
   const openCtx = (e: React.MouseEvent, queueId: string | null) => {
@@ -1697,7 +1996,7 @@ export default function App() {
         else await window.jetro!.openFile(it.savePath);
       } else await window.jetro!.revealInFolder(it.savePath);
     } catch (e: any) {
-      alert(e?.message || t.common.couldNotOpenFile);
+      setNotice(e?.message || t.common.couldNotOpenFile);
     }
   };
 
@@ -1753,7 +2052,7 @@ export default function App() {
     try {
       await window.jetro!.redownload(it.id);
     } catch (e: any) {
-      alert(e?.message || t.itemMenu.couldNotRestart);
+      setNotice(e?.message || t.itemMenu.couldNotRestart);
     }
   };
 
@@ -1764,7 +2063,7 @@ export default function App() {
     try {
       await window.jetro!.refreshDownload(it.id);
     } catch (e: any) {
-      alert(e?.message || t.itemMenu.couldNotRefresh);
+      setNotice(e?.message || t.itemMenu.couldNotRefresh);
     } finally {
       setRefreshingId(null);
       setItemCtx(null);
@@ -1783,7 +2082,9 @@ export default function App() {
     const it = itemCtxItem;
     setItemCtx(null);
     if (!it || !hasBackend()) return;
-    if (it.status === 'downloading' || it.status === 'merging' || it.status === 'queued') {
+    if (it.status === 'merging') return;
+    if (it.via === 'ytdlp' && it.status === 'downloading') return;
+    if (it.status === 'downloading' || it.status === 'queued') {
       window.jetro!.pause(it.id);
     } else if (it.status !== 'completed') {
       window.jetro!.resume(it.id);
@@ -1869,7 +2170,7 @@ export default function App() {
         setThemeChoice(normalizeTheme((next as any)?.theme ?? clean.theme));
         try { localStorage.setItem(THEME_KEY, normalizeTheme((next as any)?.theme ?? clean.theme)); } catch {}
       } catch (e: any) {
-        alert(e?.message || 'Could not save settings.');
+        setNotice(e?.message || 'Could not save settings.');
         return;
       }
     }
@@ -1933,14 +2234,41 @@ export default function App() {
   ];
 
   const ctxQueue = ctx?.queueId ? queueById(ctx.queueId) : null;
-  const completedPopup = completedQueue[0] || null;
-  const dismissCompletedPopup = () => setCompletedQueue((prev) => prev.slice(1));
+  // In-app download-complete popup (toggleable in Settings, default ON).
+  // Single instance: new completions append to completedQueue and render in
+  // the "+n more" list; dismissing clears the whole queue at once.
+  const showCompletePopup = (settings as any)?.showCompletePopup !== false;
+  const completedPopup = showCompletePopup ? completedQueue[0] || null : null;
+  const dismissCompletedPopup = () => setCompletedQueue([]);
+  // Opening the shown file reveals the next aggregated file (if any) so each
+  // file can still be opened in turn; plain dismiss closes everything.
+  const advanceCompletedPopup = () => setCompletedQueue((prev) => prev.slice(1));
+
+  // Turning the popup off hides any visible popup and drops the queued ones
+  // (their ids stay marked seen, so no flood when re-enabled).
+  useEffect(() => {
+    if (!showCompletePopup) setCompletedQueue([]);
+  }, [showCompletePopup]);
 
   // ---------- toolbar state ----------
+  // Merging (yt-dlp + ffmpeg mux) is non-pausable: the backend ignores pause
+  // in that state, so the buttons stay grayed out instead of faking a pause
+  // while the merge keeps going. yt-dlp downloads are also non-pausable while
+  // downloading — same treatment: grayed out, backend ignores pause.
+  const isPausable = (it: { status: string; via?: string }) =>
+    it.status === 'queued' || (it.status === 'downloading' && it.via !== 'ytdlp');
   const selected = items.find((i) => i.id === selectedId) || null;
   const canResume = !!selected && (selected.status === 'paused' || selected.status === 'error');
-  const canStop = !!selected && (selected.status === 'downloading' || selected.status === 'merging' || selected.status === 'queued');
-  const canStopAll = items.some((i) => i.status === 'downloading' || i.status === 'merging' || i.status === 'queued');
+  const canStop = !!selected && isPausable(selected);
+  const canStopAll = items.some((i) => isPausable(i));
+
+  // A queue has work when it holds at least one download that isn't finished.
+  // Empty queues and all-completed queues have nothing to start/stop: their
+  // buttons stay disabled until new downloads are added (which unlocks them).
+  const queueHasWork = (queueId: string) =>
+    items.some((i) => (i.queueId || null) === queueId && i.status !== 'completed');
+  const canStartQueue = (q: Queue) => !q.running && queueHasWork(q.id);
+  const canStopQueue = (q: Queue) => q.running && queueHasWork(q.id);
 
   useEffect(() => {
     if (selectedId && !items.some((i) => i.id === selectedId)) setSelectedId(null);
@@ -1959,6 +2287,10 @@ export default function App() {
 
   // Escape dismisses the remove-confirm dialog
   useEscape(!!pendingRemove, () => setPendingRemove(null));
+  // Escape dismisses the notice popup
+  useEscape(!!notice, () => setNotice(null));
+  // Escape dismisses the delete-queue confirm
+  useEscape(!!pendingDeleteQueue, () => setPendingDeleteQueue(null));
 
   // Escape dismisses rename / properties dialogs
   useEscape(!!(renameState || propsId), () => {
@@ -2005,7 +2337,7 @@ export default function App() {
   };
   const handleStopAll = async () => {
     if (!canStopAll || !hasBackend()) return;
-    const active = items.filter((i) => i.status === 'downloading' || i.status === 'merging' || i.status === 'queued');
+    const active = items.filter((i) => isPausable(i));
     for (const it of active) {
       try {
         await window.jetro!.pause(it.id);
@@ -2103,13 +2435,13 @@ export default function App() {
                       <button
                         key={q.id}
                         className="ctx-item"
-                        disabled={q.running}
+                        disabled={!canStartQueue(q)}
                         title={q.running ? t.toolbar.alreadyRunning(q.name) : t.toolbar.startNamed(q.name)}
                         onClick={() => {
                           handleStartStopQueue(q);
                           setQueueMenu(null);
                         }}
-                      ><FiPlay className="btn-icon" /> {q.name}{q.running ? t.common.runningSuffix : ''}</button>
+                      ><FiPlay className="btn-icon" /> <span className="dropdown-queue-name">{q.name}{q.running ? t.common.runningSuffix : ''}</span> <span className="nav-count">{counts(`queue:${q.id}`)}</span></button>
                     ))}
                   </div>
               )}
@@ -2123,42 +2455,54 @@ export default function App() {
                       <button
                         key={q.id}
                         className="ctx-item"
-                        disabled={!q.running}
+                        disabled={!canStopQueue(q)}
                         title={q.running ? t.toolbar.stopNamed(q.name) : t.toolbar.notRunning(q.name)}
                         onClick={() => {
                           handleStartStopQueue(q);
                           setQueueMenu(null);
                         }}
-                      ><FiSquare className="btn-icon" /> {q.name}{q.running ? '' : t.common.stoppedSuffix}</button>
+                      ><FiSquare className="btn-icon" /> <span className="dropdown-queue-name">{q.name}{q.running ? '' : t.common.stoppedSuffix}</span> <span className="nav-count">{counts(`queue:${q.id}`)}</span></button>
                     ))}
                   </div>
               )}
             </div>
-            <span className="toolbar-spacer" />
-            <div className="view-toggle" role="radiogroup" aria-label={t.toolbar.viewModeLabel}>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={viewMode === 'cards'}
-                title={t.toolbar.cardView}
-                className={'view-toggle-btn' + (viewMode === 'cards' ? ' active' : '')}
-                onClick={() => setViewMode('cards')}
-              ><FiGrid size={15} /></button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={viewMode === 'details'}
-                title={t.toolbar.detailsView}
-                className={'view-toggle-btn' + (viewMode === 'details' ? ' active' : '')}
-                onClick={() => setViewMode('details')}
-              ><FiList size={15} /></button>
+            <div className="toolbar-right">
+              <label className="page-size-wrap" title={t.pagination.perPage}>
+                <select
+                  className="input page-size-select"
+                  value={pageSize}
+                  aria-label={t.pagination.perPage}
+                  onChange={(e) => setPageSize(Number(e.target.value))}
+                >
+                  {PAGE_SIZE_OPTIONS.map((n) => <option key={n} value={n}>{n}</option>)}
+                  <option value={0}>{t.pagination.all}</option>
+                </select>
+              </label>
+              <div className="view-toggle" role="radiogroup" aria-label={t.toolbar.viewModeLabel}>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={viewMode === 'cards'}
+                  title={t.toolbar.cardView}
+                  className={'view-toggle-btn' + (viewMode === 'cards' ? ' active' : '')}
+                  onClick={() => setViewMode('cards')}
+                ><FiGrid size={15} /></button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={viewMode === 'details'}
+                  title={t.toolbar.detailsView}
+                  className={'view-toggle-btn' + (viewMode === 'details' ? ' active' : '')}
+                  onClick={() => setViewMode('details')}
+                ><FiList size={15} /></button>
+              </div>
             </div>
           </div>
 
           {showUpdateBanner && updateInfo && (
             <div className="card" style={{ justifyContent: 'space-between', alignItems: 'center', borderColor: 'var(--green-soft-border)', background: 'var(--green-soft-bg)' }}>
-              <div>
-                <b><FiDownloadCloud className="inline-icon" /> {t.updateBanner.available(updateInfo.latest)}</b>{' '}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <b style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><FiDownloadCloud className="inline-icon" /> {t.updateBanner.available(updateInfo.latest)}</b>{' '}
                 <span className="queue-meta">{t.updateBanner.have(updateInfo.current)}</span>
               </div>
               <div className="row" style={{ flexWrap: 'wrap' }}>
@@ -2168,6 +2512,7 @@ export default function App() {
             </div>
           )}
           <div
+            ref={listRef}
             className="list"
             dir="ltr"
             onDragOver={(e) => { e.preventDefault(); }}
@@ -2227,9 +2572,9 @@ export default function App() {
                 </div>
                 <div className="row">
                   {queueById(filter.slice(6))?.running ? (
-                    <button className="btn" onClick={() => queueById(filter.slice(6)) && handleStartStopQueue(queueById(filter.slice(6))!)}><FiSquare className="btn-icon" /> {t.common.stop}</button>
+                    <button className="btn" disabled={!queueHasWork(filter.slice(6))} onClick={() => queueById(filter.slice(6)) && handleStartStopQueue(queueById(filter.slice(6))!)}><FiSquare className="btn-icon" /> {t.common.stop}</button>
                   ) : (
-                    <button className="btn btn-primary" onClick={() => queueById(filter.slice(6)) && handleStartStopQueue(queueById(filter.slice(6))!)}><FiPlay className="btn-icon" /> {t.common.start}</button>
+                    <button className="btn btn-primary" disabled={!queueHasWork(filter.slice(6))} onClick={() => queueById(filter.slice(6)) && handleStartStopQueue(queueById(filter.slice(6))!)}><FiPlay className="btn-icon" /> {t.common.start}</button>
                   )}
                   <button className="btn" onClick={() => queueById(filter.slice(6)) && openEditModal(queueById(filter.slice(6))!)}>{t.common.edit}</button>
                 </div>
@@ -2314,7 +2659,7 @@ export default function App() {
                   <div className="details-th details-actions-head" title={t.list.actionsHead} />
                 </div>
                 <div className="details-body">
-                  {filtered.map((it) => {
+                  {paged.map((it) => {
                     const completed = it.status === 'completed';
                     const active = it.status === 'downloading' || it.status === 'merging';
                     const lastTry = lastTryOf(it);
@@ -2427,9 +2772,11 @@ export default function App() {
                           );
                         })}
                         <div className="details-td details-actions" onClick={(e) => e.stopPropagation()}>
-                          {it.status === 'downloading' || it.status === 'merging' || it.status === 'queued'
-                            ? <button className="icon-btn details-action" title={t.list.pauseTitle} onClick={() => window.jetro?.pause(it.id)}><FiPause size={13} /></button>
-                            : !completed && <button className="icon-btn details-action" title={t.list.resumeTitle} onClick={() => window.jetro?.resume(it.id)}><FiPlay size={13} /></button>}
+                          {it.status === 'merging' || (it.via === 'ytdlp' && it.status === 'downloading')
+                            ? <button className="icon-btn details-action" title={t.list.pauseTitle} disabled style={{ opacity: 0.35, cursor: 'not-allowed' }}><FiPause size={13} /></button>
+                            : it.status === 'downloading' || it.status === 'queued'
+                              ? <button className="icon-btn details-action" title={t.list.pauseTitle} onClick={() => window.jetro?.pause(it.id)}><FiPause size={13} /></button>
+                              : !completed && <button className="icon-btn details-action" title={t.list.resumeTitle} onClick={() => window.jetro?.resume(it.id)}><FiPlay size={13} /></button>}
                           {completed ? (
                             <>
                               <button
@@ -2437,7 +2784,7 @@ export default function App() {
                                 title={t.list.openFolderTitle}
                                 onClick={async () => {
                                   if (!hasBackend()) return;
-                                  try { await window.jetro!.revealInFolder(it.savePath); } catch (e: any) { alert(e?.message || t.common.couldNotOpenFolder); }
+                                  try { await window.jetro!.revealInFolder(it.savePath); } catch (e: any) { setNotice(e?.message || t.common.couldNotOpenFolder); }
                                 }}
                               ><FiFolder size={13} /></button>
                               <button
@@ -2456,7 +2803,7 @@ export default function App() {
                 </div>
               </div>
             )}
-            {viewMode === 'cards' && filtered.map((it) => {
+            {viewMode === 'cards' && paged.map((it) => {
               const pct = it.totalBytes ? Math.min(100, (it.downloadedBytes / it.totalBytes) * 100) : 0;
               const completed = it.status === 'completed';
               const qNameOf = it.queueId ? queueById(it.queueId)?.name : null;
@@ -2501,9 +2848,11 @@ export default function App() {
                     </div>
                   </div>
                   <div className="actions" onClick={(e) => e.stopPropagation()}>
-                    {it.status === 'downloading' || it.status === 'merging' || it.status === 'queued'
-                      ? <button className="icon-btn" title={t.list.pauseTitle} onClick={() => window.jetro?.pause(it.id)}><FiPause size={15} /></button>
-                      : !completed && <button className="icon-btn" title={t.list.resumeTitle} onClick={() => window.jetro?.resume(it.id)}><FiPlay size={15} /></button>}
+                    {it.status === 'merging' || (it.via === 'ytdlp' && it.status === 'downloading')
+                      ? <button className="icon-btn" title={t.list.pauseTitle} disabled style={{ opacity: 0.35, cursor: 'not-allowed' }}><FiPause size={15} /></button>
+                      : it.status === 'downloading' || it.status === 'queued'
+                        ? <button className="icon-btn" title={t.list.pauseTitle} onClick={() => window.jetro?.pause(it.id)}><FiPause size={15} /></button>
+                        : !completed && <button className="icon-btn" title={t.list.resumeTitle} onClick={() => window.jetro?.resume(it.id)}><FiPlay size={15} /></button>}
                     {completed ? (
                       <>
                         <button
@@ -2514,7 +2863,7 @@ export default function App() {
                             try {
                               await window.jetro!.revealInFolder(it.savePath);
                             } catch (e: any) {
-                              alert(e?.message || t.common.couldNotOpenFolder);
+                              setNotice(e?.message || t.common.couldNotOpenFolder);
                             }
                           }}
                         ><FiFolder size={15} /></button>
@@ -2532,6 +2881,36 @@ export default function App() {
               );
             })}
           </div>
+          {totalPages > 1 && filtered.length > 0 && (
+            <div className="pagination" dir="ltr">
+              <span className="queue-meta">{t.pagination.showing(pageStart, pageEnd, filtered.length)}</span>
+              <div className="pagination-pages">
+                <button
+                  className="btn btn-small"
+                  disabled={safePage <= 1}
+                  title={t.pagination.prevPage}
+                  onClick={() => goToPage(safePage - 1)}
+                ><FiChevronLeft size={14} /></button>
+                {pageNumbers.map((p, i) => p === '…' ? (
+                  <span key={'e' + i} className="pagination-ellipsis">…</span>
+                ) : (
+                  <button
+                    key={p}
+                    className={'btn btn-small page-btn' + (p === safePage ? ' btn-primary' : '')}
+                    aria-current={p === safePage ? 'page' : undefined}
+                    title={t.pagination.pageTitle(p)}
+                    onClick={() => goToPage(p)}
+                  >{p}</button>
+                ))}
+                <button
+                  className="btn btn-small"
+                  disabled={safePage >= totalPages}
+                  title={t.pagination.nextPage}
+                  onClick={() => goToPage(safePage + 1)}
+                ><FiChevronRight size={14} /></button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -2544,6 +2923,7 @@ export default function App() {
               <>
                 <button
                   className="ctx-item"
+                  disabled={!queueHasWork(ctxQueue.id)}
                   onClick={() => {
                     handleStartStopQueue(ctxQueue);
                     setCtx(null);
@@ -2568,8 +2948,10 @@ export default function App() {
         const completed = it.status === 'completed';
         const active = it.status === 'downloading' || it.status === 'merging';
         const queued = it.status === 'queued';
+        const merging = it.status === 'merging';
+        const ytdlpDownloading = it.via === 'ytdlp' && it.status === 'downloading';
         const canResume = it.status === 'paused' || it.status === 'error';
-        const canStop = active || queued;
+        const canStop = queued || (it.status === 'downloading' && it.via !== 'ytdlp');
         const isVideo = it.via === 'ytdlp';
         const inQueue = !!it.queueId;
         const queueName = it.queueId ? queueById(it.queueId)?.name : null;
@@ -2613,7 +2995,11 @@ export default function App() {
                 title={active || queued ? t.itemMenu.redownloadIdle : t.itemMenu.redownloadReady}
                 onClick={handleRedownloadItem}
               ><FiRotateCcw size={14} /> {t.itemMenu.redownload}</button>
-              {canStop ? (
+              {merging || ytdlpDownloading ? (
+                <button className="ctx-item" disabled title={t.list.pauseTitle}>
+                  <FiPause size={14} /> {t.itemMenu.stopDownload}
+                </button>
+              ) : canStop ? (
                 <button className="ctx-item" onClick={handleItemResumeStop}>
                   <FiPause size={14} /> {t.itemMenu.stopDownload}
                 </button>
@@ -2677,11 +3063,6 @@ export default function App() {
                       setItemCtx(null);
                       setQName('');
                       setQNameError('');
-                      setQSchedOn(false);
-                      setQStart(QUEUE_SCHED_DEFAULT_START);
-                      setQStop(QUEUE_SCHED_DEFAULT_STOP);
-                      setQSchedError('');
-                      setQPower('nothing');
                       setShowQueueModal({ mode: 'create' });
                     }}
                   ><FiPlus size={14} /> {t.itemMenu.newQueue}</button>
@@ -2709,9 +3090,15 @@ export default function App() {
       })()}
 
       {showAdd && (
-        <div className="modal-overlay" onClick={() => setShowAdd(false)}>
+        <div className="modal-overlay">
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiPlus className="inline-icon" /> {t.newDownload.title}</h2>
+            <h2 className="modal-title"><FiPlus className="inline-icon" /> {t.newDownload.title}
+              {pendingAdds.length > 0 && (
+                <span className="queue-meta" style={{ marginLeft: 8 }} title={`${pendingAdds.length} more link(s) underneath`}>
+                  +{pendingAdds.length} queued
+                </span>
+              )}
+            </h2>
             <p>{t.newDownload.introA}<br />{t.newDownload.introB}{' '}
               <button
                 type="button"
@@ -2749,7 +3136,14 @@ export default function App() {
               style={urlError ? { borderColor: 'var(--red)' } : undefined}
             />
             {urlError && <div className="form-error">{urlError}</div>}
-            {newUrl.trim() !== '' && (!isVideoPageUrl(newUrl) || !!selectedVideoKind || selectedVideoHeight > 0 || !!selectedVideoUrl) && (
+            {newUrl.trim() !== '' && isPotentialVideoPageUrl(newUrl) && !forceVideo && (
+              <div style={{ marginBottom: 8 }}>
+                <button type="button" className="btn btn-small" disabled={videoLoading} onClick={() => { setForceVideo(true); detectVideo(); }}>
+                  <FiFilm className="btn-icon" /> {videoLoading ? t.newDownload.detecting : 'Is this a video/audio page? Click to detect'}
+                </button>
+              </div>
+            )}
+            {newUrl.trim() !== '' && (!isVideoPageUrl(newUrl) || hasVideoSelection || videoDetectFailed) && (
               <>
                 <label className="form-label">{t.newDownload.fileName}</label>
                 <input
@@ -2771,9 +3165,16 @@ export default function App() {
                 )}
               </>
             )}
-            {newUrl.trim() !== '' && isVideoPageUrl(newUrl) && (
+            {newUrl.trim() !== '' && isVideoPage && (
               <div className="video-box">
                 <div className="video-box-desc">{t.newDownload.videoDesc}</div>
+                {forceVideo && !isVideoPageUrl(newUrl) && (
+                  <div style={{ marginBottom: 6 }}>
+                    <button type="button" className="link-btn" onClick={() => setForceVideo(false)}>
+                      Not a video page — download as a direct file instead
+                    </button>
+                  </div>
+                )}
                 <button className="btn btn-small" disabled={videoLoading} onClick={detectVideo}>
                   <FiFilm className="btn-icon" /> {videoLoading ? t.newDownload.detecting : videoFormats.length ? t.newDownload.detectAgain : t.newDownload.detectQualities}
                 </button>
@@ -2983,7 +3384,7 @@ export default function App() {
               <input className="input" dir="ltr" placeholder={t.common.chooseFolder} value={savePath} onChange={(e) => setSavePath(e.target.value)} />
               <button className="btn" title={t.common.chooseFolderTitle} onClick={() => chooseSaveFolder()}><FiFolder size={16} /></button>
             </div>
-            {isVideoPageUrl(newUrl) ? (
+            {(isVideoPageUrl(newUrl) || (forceVideo && videoResolved)) && !videoDetectFailed ? (
               <div className="queue-note">{t.newDownload.videoQueueNote}</div>
             ) : (
               <div className="row select-row">
@@ -2999,9 +3400,9 @@ export default function App() {
                 </select>
               </div>
             )}
-            <button className="btn" style={{ width: '100%', marginTop: 10 }} onClick={async () => { try { const txt = await navigator.clipboard.readText(); if (txt) { setNewUrl(txt.trim()); setUrlError(''); filenameTouchedRef.current = false; } } catch {} }}><FiClipboard className="btn-icon" /> {t.common.pasteFromClipboard}</button>
+            <button className="btn" style={{ width: '100%', marginTop: 10 }} onClick={async () => { try { const txt = await navigator.clipboard.readText(); const clean = String(txt || '').trim(); if (clean) { const cur = (newUrl || '').trim(); if (cur && cur !== clean) stashCurrentAddIfNeeded(clean); setNewUrl(clean); newUrlRef.current = clean; setUrlError(''); filenameTouchedRef.current = false; externalAutoRef.current = { url: clean, nonce: Date.now() + Math.random() }; } } catch {} }}><FiClipboard className="btn-icon" /> {t.common.pasteFromClipboard}</button>
             <div className="row modal-actions">
-              <button className="btn" onClick={() => setShowAdd(false)}>{t.common.cancel}</button>
+              <button className="btn" onClick={() => restoreNextAddOrClose()}>{t.common.cancel}</button>
               <button className="btn btn-primary" disabled={adding} onClick={() => addDl()}>{adding ? t.newDownload.starting : t.common.download}</button>
             </div>
           </div>
@@ -3285,8 +3686,8 @@ export default function App() {
       {showQueueModal && (
         <div className="modal-overlay" onClick={() => { setShowQueueModal(null); setPendingQueueMove(null); setQueueCreateReturn(null); }}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>{showQueueModal.mode === 'create' ? (<><FiPlus className="inline-icon" /> {t.queueModal.createTitle}</>) : (<><FiEdit2 className="inline-icon" /> {t.queueModal.editTitle}</>)}</h2>
-            <p>{showQueueModal.mode === 'create' ? t.queueModal.createDesc : t.queueModal.editDesc}</p>
+            <h2><FiPlus className="inline-icon" /> {t.queueModal.createTitle}</h2>
+            <p>{t.queueModal.createDesc}</p>
             <label style={{ fontSize: 12 }}>{t.queueModal.nameLabel}</label>
             <input
               className="input"
@@ -3304,74 +3705,35 @@ export default function App() {
               style={qNameError ? { borderColor: 'var(--red)' } : undefined}
             />
             {qNameError && <div className="form-error">{qNameError}</div>}
-            <label style={{ fontSize: 13 }}>
-              <input
-                type="checkbox"
-                checked={qSchedOn}
-                onChange={(e) => {
-                  setQSchedOn(e.target.checked);
-                  setQSchedError('');
-                }}
-              /> {t.queueModal.scheduleToggle}
-            </label>
-            <div className="row" style={{ marginTop: 8, opacity: qSchedOn ? 1 : 0.45 }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12, color: qSchedOn ? undefined : 'var(--muted)' }}>{t.queueModal.startLabel}</label>
-                <input
-                  className="input"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="off"
-                  spellCheck={false}
-                  maxLength={5}
-                  placeholder="22:00"
-                  value={qStart}
-                  disabled={!qSchedOn}
-                  onChange={(e) => {
-                    setQStart(e.target.value);
-                    if (qSchedError) setQSchedError('');
-                  }}
-                  style={qSchedError ? { borderColor: 'var(--red)' } : undefined}
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12, color: qSchedOn ? undefined : 'var(--muted)' }}>{t.queueModal.stopLabel}</label>
-                <input
-                  className="input"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="off"
-                  spellCheck={false}
-                  maxLength={5}
-                  placeholder="07:00"
-                  value={qStop}
-                  disabled={!qSchedOn}
-                  onChange={(e) => {
-                    setQStop(e.target.value);
-                    if (qSchedError) setQSchedError('');
-                  }}
-                  style={qSchedError ? { borderColor: 'var(--red)' } : undefined}
-                />
-              </div>
-            </div>
-            {qSchedError && <div className="form-error">{qSchedError}</div>}
-            <label style={{ fontSize: 12, marginTop: 12, display: 'block' }}>{t.queueModal.powerLabel}</label>
-            <select className="input" value={qPower} onChange={(e) => setQPower(normalizeQueuePowerAction(e.target.value))} title={t.queueModal.powerTitle}>
-              {queuePowerOptions(t.power).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-            <div className="form-hint" style={{ margin: '4px 0 0' }}>{t.queueModal.powerHint}</div>
             <div className="row" style={{ marginTop: 14 }}>
               <button
                 className="btn btn-primary"
                 onClick={saveQueueModal}
-                disabled={!qName.trim() || (qSchedOn && (!normalizeTime24h(qStart) || !normalizeTime24h(qStop)))}
+                disabled={!qName.trim()}
               >
-                {showQueueModal.mode === 'create' ? t.queueModal.create : t.queueModal.save}
+                {t.queueModal.create}
               </button>
               <button className="btn" onClick={() => { setShowQueueModal(null); setPendingQueueMove(null); setQueueCreateReturn(null); }}>{t.common.cancel}</button>
             </div>
           </div>
         </div>
+      )}
+
+      {showScheduler && (
+        <QueueScheduler
+          queues={queues}
+          items={items}
+          initialQueueId={showScheduler}
+          t={t}
+          onClose={() => setShowScheduler(null)}
+          onCreateQueue={handleCreateQueue}
+          onDeleteQueue={handleDeleteQueue}
+          onSaveQueue={saveSchedulerQueue}
+          onReorder={reorderSchedulerQueue}
+          onRemoveItem={removeSchedulerItem}
+          onStartQueue={startSchedulerQueue}
+          onStopQueue={stopSchedulerQueue}
+        />
       )}
 
       {showSettings && draftSettings && (
@@ -3412,7 +3774,10 @@ export default function App() {
                 </option>
               )}
             </select>
-            <label style={{ fontSize: 13 }}><input type="checkbox" checked={!!draftSettings.autoCaptureClipboard} onChange={(e) => setDraftSettings({ ...draftSettings, autoCaptureClipboard: e.target.checked })} /> {t.settings.clipboard}</label>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+              <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}><input type="checkbox" style={{ margin: 0 }} checked={!!draftSettings.autoCaptureClipboard} onChange={(e) => setDraftSettings({ ...draftSettings, autoCaptureClipboard: e.target.checked })} /> {t.settings.clipboard}</label>
+              <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, margin: 0 }}><input type="checkbox" style={{ margin: 0 }} checked={draftSettings.showCompletePopup !== false} onChange={(e) => setDraftSettings({ ...draftSettings, showCompletePopup: e.target.checked })} /> {t.settings.completePopup}</label>
+            </div>
             <div className="settings-section">
               <h3 className="settings-section-title"><FiRotateCcw className="inline-icon" /> {t.settings.retrySection}</h3>
               <p className="settings-section-sub">{t.settings.retrySub}</p>
@@ -3543,7 +3908,7 @@ export default function App() {
                     try {
                       await window.jetro!.revealInFolder(binStatus.path);
                     } catch (e: any) {
-                      alert(e?.message || t.common.couldNotOpenFolder);
+                      setNotice(e?.message || t.common.couldNotOpenFolder);
                     }
                   }}
                 ><FiFolder className="btn-icon" /></button>
@@ -3597,7 +3962,7 @@ export default function App() {
 
       {showSettings && showDiscardConfirm && (
         <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => setShowDiscardConfirm(false)}>
-          <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()}>
+          <div className="modal" style={{ width: 520 }} onClick={(e) => e.stopPropagation()}>
             <h2 className="modal-title"><FiXCircle className="inline-icon" /> {t.discard.title}</h2>
             <p>{t.discard.body}</p>
             <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
@@ -3687,35 +4052,73 @@ export default function App() {
               </div>
             </div>
             {completedQueue.length > 1 && (
-              <div className="complete-more">{t.complete.more(completedQueue.length - 1)}</div>
+              <>
+                <button
+                  type="button"
+                  className={'complete-more complete-more-btn' + (completeExpanded ? ' open' : '')}
+                  aria-expanded={completeExpanded}
+                  onClick={() => setCompleteExpanded((v) => !v)}
+                >
+                  <FiChevronDown className="complete-more-chevron" size={14} />
+                  {t.complete.more(completedQueue.length - 1)}
+                </button>
+                {completeExpanded && (
+                  <div className="complete-list" role="list">
+                    {completedQueue.slice(1).map((it) => (
+                      <div key={it.id} className="complete-list-item" role="listitem" title={`${it.filename}\n${it.savePath}`}>
+                        <span className="complete-list-icon"><OsFileIcon item={it} /></span>
+                        <span className="complete-list-info">
+                          <span className="complete-list-name">{it.filename}</span>
+                          <span className="complete-list-meta">{fmtBytes(it.totalBytes || it.downloadedBytes)}</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
             <div className="row complete-actions">
               <button
                 className="btn btn-primary"
                 onClick={async () => {
-                  if (!hasBackend()) { dismissCompletedPopup(); return; }
+                  if (!hasBackend()) { advanceCompletedPopup(); return; }
                   try {
                     await window.jetro!.openFile(completedPopup.savePath);
                   } catch (e: any) {
-                    alert(e?.message || t.common.couldNotOpenFile);
+                    setNotice(e?.message || t.common.couldNotOpenFile);
                   }
-                  dismissCompletedPopup();
+                  advanceCompletedPopup();
                 }}
               ><FiFileText className="btn-icon" /> {t.complete.openFile}</button>
               <button
                 className="btn"
                 onClick={async () => {
-                  if (!hasBackend()) { dismissCompletedPopup(); return; }
+                  if (!hasBackend()) { advanceCompletedPopup(); return; }
                   try {
                     await window.jetro!.revealInFolder(completedPopup.savePath);
                   } catch (e: any) {
-                    alert(e?.message || t.common.couldNotOpenFolder);
+                    setNotice(e?.message || t.common.couldNotOpenFolder);
                   }
-                  dismissCompletedPopup();
+                  advanceCompletedPopup();
                 }}
               ><FiFolder className="btn-icon" /> {t.complete.openFolder}</button>
             </div>
             <button className="complete-dismiss" onClick={dismissCompletedPopup}>{t.common.dismiss}</button>
+          </div>
+        </div>
+      )}
+
+      {notice && <NoticeDialog message={notice} okLabel={t.common.ok} onClose={() => setNotice(null)} />}
+
+      {pendingDeleteQueue && (
+        <div className="modal-overlay" style={{ zIndex: 80 }} onClick={() => setPendingDeleteQueue(null)}>
+          <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
+            <h2 className="modal-title"><FiTrash2 className="inline-icon" /> {t.queueMenu.deleteQueue}</h2>
+            <p style={{ whiteSpace: 'pre-line' }}>{t.queueMenu.deleteConfirm(pendingDeleteQueue.name)}</p>
+            <div className="row" style={{ marginTop: 16 }}>
+              <button className="btn" autoFocus onClick={() => setPendingDeleteQueue(null)}>{t.common.cancel}</button>
+              <button className="btn btn-danger" onClick={() => doDeleteQueue(pendingDeleteQueue)}>{t.queueMenu.deleteQueue}</button>
+            </div>
           </div>
         </div>
       )}
@@ -3866,7 +4269,7 @@ export default function App() {
                   className="btn"
                   onClick={async () => {
                     if (!hasBackend()) return;
-                    try { await window.jetro!.revealInFolder(it.savePath); } catch (e: any) { alert(e?.message || t.common.couldNotOpenFolder); }
+                    try { await window.jetro!.revealInFolder(it.savePath); } catch (e: any) { setNotice(e?.message || t.common.couldNotOpenFolder); }
                   }}
                 ><FiFolder className="btn-icon" /> {t.complete.openFolder}</button>
                 <button className="btn btn-primary" autoFocus onClick={() => setPropsId(null)}>{t.common.close}</button>

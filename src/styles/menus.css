@@ -22,7 +22,7 @@ html[dir='rtl'] .ctx-menu {
   padding: 9px 12px;
   border: none; background: transparent;
   border-radius: 9px;
-  font-size: 13.5px; font-weight: 600;
+  font-size: 13.5px; font-weight: 700;
   color: var(--text);
   cursor: pointer;
   text-align: left;
@@ -75,6 +75,9 @@ html[dir='rtl'] .ctx-menu-item { min-width: 310px; max-width: min(390px, 94vw); 
   max-width: 220px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   outline: none;
+  /* Center the queue name / "No queue" label in every language + direction. */
+  text-align: center;
+  text-align-last: center;
 }
 /* RTL queue names + "+ صف جدید…" need a touch more room. */
 html[dir='rtl'] .queue-select {

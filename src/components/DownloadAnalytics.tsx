@@ -8,6 +8,7 @@ import { fmtBytes, fmtEta, fmtSize, fmtSpeed, formatEtaSec, statusColor, statusL
 import { hasBackend } from '@/api/jetro';
 import { useLanguage } from '@/locale/LanguageContext';
 import OsFileIcon from '@/components/OsFileIcon';
+import NoticeDialog from '@/components/NoticeDialog';
 import SpeedGraph from '@/components/SpeedGraph';
 import type { SpeedStats } from '@/hooks/useSpeedHistory';
 
@@ -29,6 +30,7 @@ function hostnameOf(url: string): string {
 export default function DownloadAnalytics({ item, queueName, stats, onClose }: Props) {
   const { t } = useLanguage();
   const [segInfo, setSegInfo] = useState<DownloadSegmentsInfo | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Poll per-connection progress while the modal is open.
   useEffect(() => {
@@ -52,7 +54,10 @@ export default function DownloadAnalytics({ item, queueName, stats, onClose }: P
 
   const completed = item.status === 'completed';
   const active = item.status === 'downloading' || item.status === 'merging';
-  const pausable = active || item.status === 'queued';
+  const merging = item.status === 'merging';
+  const ytdlpDownloading = item.via === 'ytdlp' && item.status === 'downloading';
+  const nonPausableActive = merging || ytdlpDownloading;
+  const pausable = item.status === 'queued' || (item.status === 'downloading' && item.via !== 'ytdlp');
   const resumable = item.status === 'paused' || item.status === 'error';
   const pct = item.totalBytes ? Math.min(100, (item.downloadedBytes / item.totalBytes) * 100) : 0;
   const total = item.totalBytes || item.downloadedBytes || 0;
@@ -106,7 +111,7 @@ export default function DownloadAnalytics({ item, queueName, stats, onClose }: P
     try {
       await window.jetro!.openFile(item.savePath);
     } catch (e: any) {
-      alert(e?.message || t.common.couldNotOpenFile);
+      setNotice(e?.message || t.common.couldNotOpenFile);
     }
   };
   const openFolder = async () => {
@@ -114,11 +119,12 @@ export default function DownloadAnalytics({ item, queueName, stats, onClose }: P
     try {
       await window.jetro!.revealInFolder(item.savePath);
     } catch (e: any) {
-      alert(e?.message || t.common.couldNotOpenFolder);
+      setNotice(e?.message || t.common.couldNotOpenFolder);
     }
   };
 
   return (
+    <>
     <div className="modal-overlay analytics-overlay" onClick={onClose}>
       <div className="modal analytics-modal" onClick={(e) => e.stopPropagation()}>
         <div className="analytics-head">
@@ -177,9 +183,18 @@ export default function DownloadAnalytics({ item, queueName, stats, onClose }: P
           <span>{statusLabel(item.status, t.status)}</span>
         </div>
 
-        {(pausable || resumable) && (
+        {(pausable || resumable || nonPausableActive) && (
           <div className="row analytics-controls">
-            {pausable ? (
+            {nonPausableActive ? (
+              <button
+                className="btn analytics-control-btn"
+                title={t.list.pauseTitle}
+                disabled
+                style={{ opacity: 0.35, cursor: 'not-allowed' }}
+              >
+                <FiPause className="btn-icon" /> {t.common.pause}
+              </button>
+            ) : pausable ? (
               <button
                 className="btn analytics-control-btn"
                 title={t.list.pauseTitle}
@@ -270,5 +285,7 @@ export default function DownloadAnalytics({ item, queueName, stats, onClose }: P
         </div>
       </div>
     </div>
+    {notice && <NoticeDialog message={notice} okLabel={t.common.ok} onClose={() => setNotice(null)} />}
+    </>
   );
 }

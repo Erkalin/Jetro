@@ -19,10 +19,59 @@ export function guessNameFromUrl(url: string): string {
   return 'download.bin';
 }
 
+/**
+ * Direct-file extensions: pasting one of these is a plain file download,
+ * not a video/audio page (yt-dlp also handles direct media, but the
+ * segmented engine is faster and needs no Detect step).
+ */
+const DIRECT_FILE_EXTS = new Set([
+  'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'zst',
+  'exe', 'msi', 'dmg', 'pkg', 'deb', 'rpm', 'apk', 'appx', 'msix',
+  'iso', 'img', 'cab',
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp',
+  'txt', 'csv', 'tsv', 'json', 'xml', 'yaml', 'yml', 'log', 'srt', 'ass',
+  'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tif', 'tiff',
+  'psd', 'ai', 'eps', 'ttf', 'otf', 'woff', 'woff2', 'eot',
+  'epub', 'mobi', 'azw', 'azw3', 'fb2',
+  'mp4', 'webm', 'mkv', 'm4v', 'avi', 'mov',
+  'mp3', 'm4a', 'aac', 'opus', 'ogg', 'oga', 'wav', 'flac',
+  'torrent',
+]);
+
 export function isVideoPageUrl(raw: string): boolean {
   const s = String(raw || '').toLowerCase();
   return /(youtube\.com|youtu\.be|tiktok\.com|vimeo\.com|dailymotion\.|twitch\.tv|instagram\.com|facebook\.com|fb\.watch|x\.com|twitter\.com)\//.test(s)
     || /(youtube\.com|youtu\.be)/.test(s);
+}
+
+/**
+ * Page-like links with no direct downloadable file (php/html/no extension/…
+ * — anything not ending in a known file extension) that are not already known
+ * video pages. These are treated as plain file downloads, but the dialog
+ * offers an optional yt-dlp "Is this a video/audio page?" detect step — when
+ * a video/audio is resolved the file name is renamed to the detected title.
+ */
+export function isPotentialVideoPageUrl(raw: string): boolean {
+  const input = String(raw || '').trim();
+  if (!input) return false;
+  if (isVideoPageUrl(input)) return false;
+  let pathname = '';
+  try {
+    const candidate = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(input)
+      ? input
+      : input.startsWith('//')
+        ? `https:${input}`
+        : `https://${input}`;
+    const u = new URL(candidate);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    pathname = u.pathname || '';
+  } catch {
+    return false;
+  }
+  const last = pathname.split('/').pop() || '';
+  const m = /\.([a-z0-9]{2,5})$/i.exec(last);
+  if (m && DIRECT_FILE_EXTS.has(m[1].toLowerCase())) return false;
+  return true;
 }
 
 export function sanitizeVideoFilename(title: string, ext: string): string {

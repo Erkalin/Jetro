@@ -2,10 +2,10 @@
 .modal { width: 560px; max-width: 92vw; max-height: calc(100vh - 32px); overflow-y: auto; overscroll-behavior: contain; background: var(--modal-bg); border: 1px solid var(--modal-border); border-radius: 20px; padding: 24px; box-shadow: var(--modal-shadow); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); color: var(--text); transition: background-color 0.25s ease, border-color 0.25s ease; }
 .modal h2 { margin: 0 0 4px; font-size: 18px; }
 .modal p { margin: 0 0 16px 6px; font-size: 13px; color: var(--muted); }
-.input, select.input, textarea.input { width: 100%; background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 12px; padding: 11px 14px; color: var(--text); outline: none; margin-bottom: 10px; font-size: 14px; transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease; }
+.input, select.input, textarea.input { width: 100%; background-color: var(--input-bg); border: 1px solid var(--input-border); border-radius: 12px; padding: 11px 14px; color: var(--text); outline: none; margin-bottom: 10px; font-size: 14px; transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease; }
 .input::placeholder, textarea.input::placeholder { color: var(--faint); }
 .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--input-focus-ring); }
-.input:disabled { opacity: 0.45; cursor: not-allowed; background: var(--surface); }
+.input:disabled { opacity: 0.45; cursor: not-allowed; background-color: var(--surface); }
 select.input option { background: var(--surface-solid); color: var(--text); }
 /* Custom dropdown arrow pinned close inside the box edge (native arrows sit too far out). */
 select.input {
@@ -23,6 +23,17 @@ select.input {
 }
 [data-theme="midnight"] select.input {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+/* Disabled selects must keep the single custom arrow (no tiled chevrons):
+   background-color — never the background shorthand — so the arrow's
+   image/repeat/position/size from select.input are preserved. */
+select.input:disabled {
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px;
+}
+[dir='rtl'] select.input:disabled {
+  background-position: left 10px center;
 }
 select.input {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -49,6 +60,9 @@ select.input.select-queue {
   width: auto;
   min-width: 210px;
   margin-bottom: 0;
+  /* Center the queue name / "No queue" label in every language + direction. */
+  text-align: center;
+  text-align-last: center;
 }
 html[dir='rtl'] select.input.select-queue {
   flex-basis: 250px;

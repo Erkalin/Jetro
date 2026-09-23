@@ -37,6 +37,7 @@ async function main() {
 
   // 2. ffmpeg only (extract just ffmpeg.exe, drop ffprobe + ffplay + docs).
   // ffprobe was removed: yt-dlp merges with ffmpeg alone, app never calls ffprobe.
+  // ffmpeg is always bundled — every release ships it.
   const ffmpegOut = path.join(outDir, isWin ? 'ffmpeg.exe' : 'ffmpeg');
   if (fs.existsSync(ffmpegOut)) {
     console.log('[fetch-binaries] ffmpeg exists, skipping');

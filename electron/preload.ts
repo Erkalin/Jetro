@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('jetro', {
   listQueues: () => ipcRenderer.invoke('queue:list'),
   createQueue: (name?: string) => ipcRenderer.invoke('queue:create', name),
   updateQueue: (id: string, patch: any) => ipcRenderer.invoke('queue:update', id, patch),
+  reorderQueue: (queueId: string, orderedIds: string[]) => ipcRenderer.invoke('queue:reorder', queueId, orderedIds),
   deleteQueue: (id: string) => ipcRenderer.invoke('queue:delete', id),
   startQueue: (id: string) => ipcRenderer.invoke('queue:start', id),
   stopQueue: (id: string) => ipcRenderer.invoke('queue:stop', id),

@@ -1,27 +1,14 @@
 // ---------- Context-menu viewport clamping ----------
-// Menus are positioned at the click point, but near the right/bottom edge that
-// would push them outside the window. Clamp the anchor so the menu (at its
-// tallest scrollable size) always fits, then CSS max-height + overflow-y keeps
-// any taller content scrollable instead of clipped.
+// Menus open exactly at the right-click point. The anchor itself is clamped so
+// it always stays inside the viewport, then keepCtxMenuInViewport (measured
+// after mount via useContextMenuNudge) shifts the real menu back inside when
+// it would overflow near the right/bottom edge. CSS max-height + overflow-y
+// keeps any taller content scrollable instead of clipped.
+//
+// NOTE: do NOT pre-clamp against the tallest scrollable size (e.g. 560px):
+// the queue menu is small (~150-200px), so that pushed it far above/left of
+// the cursor even with plenty of space below.
 const CTX_MARGIN = 8;
-
-function ctxCssMaxHeight(itemMenu: boolean): number {
-  if (typeof window === 'undefined') return 560;
-  const vhCap = window.innerHeight - CTX_MARGIN * 2;
-  if (itemMenu) return Math.max(120, Math.min(560, window.innerHeight * 0.7, vhCap));
-  return Math.max(120, Math.min(560, vhCap));
-}
-
-function clampCtxPos(clientX: number, clientY: number, w: number, h: number): { x: number; y: number } {
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const cw = Math.min(w, Math.max(120, vw - CTX_MARGIN * 2));
-  const ch = Math.min(h, Math.max(120, vh - CTX_MARGIN * 2));
-  return {
-    x: Math.max(CTX_MARGIN, Math.min(clientX, vw - cw - CTX_MARGIN)),
-    y: Math.max(CTX_MARGIN, Math.min(clientY, vh - ch - CTX_MARGIN)),
-  };
-}
 
 /** After mount, nudge the rendered menu back inside the viewport (covers font
  *  scaling / dynamic content taller than the estimate). Mutates style only. */
@@ -41,13 +28,11 @@ export function keepCtxMenuInViewport(el: HTMLElement | null) {
   }
 }
 
-// Estimated menu widths (px), matching styles/menus.css RTL (Persian) sizes so
-// every RTL language (fa/ar/ku/ur/he) anchors with the same logic: the queue
-// menu min-width is 280px and the item menu min-width is 310px in RTL.
-const CTX_QUEUE_MENU_W = 280;
-const CTX_ITEM_MENU_W = 310;
-
 /** Clamped viewport position for opening a menu at a right-click event. */
-export function menuAnchor(e: { clientX: number; clientY: number }, itemMenu: boolean): { x: number; y: number } {
-  return clampCtxPos(e.clientX, e.clientY, itemMenu ? CTX_ITEM_MENU_W : CTX_QUEUE_MENU_W, ctxCssMaxHeight(itemMenu));
+export function menuAnchor(e: { clientX: number; clientY: number }, _itemMenu?: boolean): { x: number; y: number } {
+  if (typeof window === 'undefined') return { x: e.clientX, y: e.clientY };
+  return {
+    x: Math.max(CTX_MARGIN, Math.min(e.clientX, window.innerWidth - CTX_MARGIN)),
+    y: Math.max(CTX_MARGIN, Math.min(e.clientY, window.innerHeight - CTX_MARGIN)),
+  };
 }
