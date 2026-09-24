@@ -1,13 +1,20 @@
 .main { flex: 1; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .topbar {
-  display: flex; gap: 10px; align-items: center;
+  display: flex; gap: 8px; align-items: center; flex-wrap: nowrap;
   background: var(--glass); border: 1px solid var(--glass-border);
-  border-radius: 18px; padding: 12px 16px;
+  border-radius: 18px; padding: 10px 12px;
   backdrop-filter: blur(22px) saturate(1.4);
   -webkit-backdrop-filter: blur(22px) saturate(1.4);
   box-shadow: var(--shadow);
   transition: background-color 0.25s ease, border-color 0.25s ease;
+  min-width: 0;
+  overflow: hidden;
 }
+/* Compact single-line bar for long translations (RU "Новое пакетное
+   скачивание"): smaller text/icons + shrink-with-ellipsis instead of
+   wrapping to a second row. Full label stays in title tooltip (App.tsx). */
+.topbar .btn { flex: 0 1 auto; min-width: 0; padding: 8px 12px; font-size: 12.5px; gap: 6px; }
+.topbar .btn-icon { width: 14px; height: 14px; }
 /* Comfortaa for all buttons */
 .btn, .icon-btn, button {
   font-family: var(--font-main);
@@ -21,12 +28,20 @@
   transition: 0.15s;
   box-shadow: var(--icon-shadow);
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  /* Long translations must never wrap the label onto a second line (which
+     grows the button): stay single-line, capped at the container, with an
+     ellipsis instead of resizing. Icons keep their size via .btn-icon. */
+  white-space: nowrap;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .btn-icon { flex-shrink: 0; }
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; }
 .inline-icon { flex-shrink: 0; vertical-align: -2px; }
-.nav-label { display: inline-flex; align-items: center; gap: 8px; }
-.nav-icon { flex-shrink: 0; font-size: 15px; }
+.nav-label { display: inline-flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.nav-icon { flex-shrink: 0; font-size: 14px; }
 .badge { display: inline-flex; align-items: center; gap: 4px; }
 .modal-title { display: flex; align-items: center; gap: 8px; }
 .queue-title { display: inline-flex; align-items: center; gap: 6px; }
@@ -55,7 +70,7 @@
 
 /* theme toggle in the topbar: glass sun/moon button */
 .theme-toggle {
-  width: 38px; height: 38px; border-radius: 12px; flex-shrink: 0;
+  width: 34px; height: 34px; border-radius: 11px; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--surface); border: 1px solid var(--glass-border);
   color: var(--muted); cursor: pointer;
@@ -67,8 +82,8 @@
 .theme-toggle svg { transition: transform 0.25s ease; }
 
 .search {
-  flex: 1; background: var(--surface); border: 1px solid var(--glass-border);
-  border-radius: 12px; padding: 9px 14px; color: var(--text); outline: none;
+  flex: 1 1 auto; min-width: 80px; background: var(--surface); border: 1px solid var(--glass-border);
+  border-radius: 12px; padding: 8px 12px; font-size: 12.5px; color: var(--text); outline: none;
   transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .search::placeholder { color: var(--faint); }

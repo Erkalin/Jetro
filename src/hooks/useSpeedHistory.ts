@@ -5,46 +5,28 @@ import { loadStoredHistory, saveStoredHistory } from '@/lib/speedHistoryStore';
 export interface SpeedSample {
   t: number;
   bps: number;
-  /** Cumulative downloaded bytes at sample time (for progress-based ETA rate). */
   done: number;
 }
 
 export interface SpeedStats {
   samples: SpeedSample[];
-  /** Mean of the non-zero samples (0 when nothing recorded yet). */
   avg: number;
-  /** Highest speed seen this session. */
   peak: number;
-  /** Stabilized progress-based rate used for ETA (B/s, 0 when unknown). */
   etaBps: number;
-  /** Stabilized seconds remaining (null = unknown). */
   etaSec: number | null;
 }
 
-// Ring-buffer per download: up to 3 hours at one sample per second.
-// The graph offers 1m / 5m / 15m / 30m / 1h / 2h / All timeline filters over
-// this window, so logging stays bounded instead of growing forever.
 const MAX_SAMPLES = 10800;
 const SAMPLE_MS = 1000;
-// localStorage writes are throttled: broadcasts arrive up to 10Hz, but a
-// snapshot every few seconds + a flush on hide/quit loses nothing visible.
 const PERSIST_MIN_MS = 5000;
-// Gap longer than this between the trailing stop-zero and the next live sample
-// means the download was paused in between: insert a zero anchor at resume time
-// so the graph stays flat at zero across the pause and then jumps vertically,
-// instead of drawing a diagonal ramp from stop time to resume time.
+// Pause gap threshold for zero anchor.
 const RESUME_ANCHOR_GAP_MS = 2000;
-// ETA combines a stable long window with a responsive short window. The long
-// window keeps the display still during brief stalls/surges; the short window
-// (a few seconds) is what makes the countdown truthful in the final stretch —
-// a 20s average alone stays dragged down by a slow start and keeps showing
-// "10-15s" when only 1-2s of bytes are left.
+// Long stable + short responsive ETA windows.
 const ETA_WINDOW_MS = 10000;
 const ETA_MIN_SPAN_MS = 3000;
 const ETA_SHORT_WINDOW_MS = 3500;
 const ETA_SHORT_MIN_SPAN_MS = 1500;
 
-/** Bytes progressed per second over a trailing window (0 if unusable). */
 function progressRate(arr: SpeedSample[], windowMs: number, minSpanMs: number): number {
   const n = arr.length;
   if (n < 2) return 0;
@@ -64,43 +46,14 @@ function progressRate(arr: SpeedSample[], windowMs: number, minSpanMs: number): 
   return delta / (spanMs / 1000);
 }
 
-/**
- * Session speed history for every active download. Samples are taken from the
- * live `items` array (fed by backend `dl:update` broadcasts), throttled to one
- * sample per second per download.
- *
- * History survives quit → relaunch: samples + peaks persist to localStorage
- * (throttled + flushed on hide) and hydrate on mount, so the analytics view
- * keeps average / peak / graph across restarts. ETA smoothing reconverges
- * live within seconds and is intentionally not stored.
- *
- * ETA state is derived from actual byte progress over a short (~3.5s,
- * responsive) + long (~10s, stable) window — not from the instantaneous
- * speed — then smoothed asymmetrically (fast to follow speed-ups, slow to
- * follow slow-downs) so the countdown glides instead of jumping, but still
- * snaps in the final seconds. Smoothing steps are gated to sample pushes
- * (1Hz), so the 10Hz broadcast rate can't accelerate convergence.
- *
- * Sampling notes:
- * - Sample arrays are replaced (never mutated in place) so consumers memoizing
- *   on the `samples` reference (e.g. SpeedGraph) reliably recompute.
- * - When a download leaves the active state (paused / stopped / completed /
- *   error) a trailing zero-speed sample is appended immediately so the graph
- *   drops straight to zero instead of freezing at the last live speed.
- *   History is kept — the line just sits flat at zero.
- * - When it resumes after a pause, a zero anchor is inserted at resume time
- *   first, so the graph jumps straight up from 0 instead of ramping
- *   diagonally across the paused gap.
- */
+// Samples live items at 1Hz, persists across restarts. ETA from byte
+// progress (short + long window), smoothed.
 export default function useSpeedHistory(items: Item[]) {
   const samplesRef = useRef(new Map<string, SpeedSample[]>());
   const peaksRef = useRef(new Map<string, number>());
   const etaBpsRef = useRef(new Map<string, number>());
   const etaSecRef = useRef(new Map<string, number>());
-  // Bumped whenever samples change so the graph re-renders even if the
-  // backend sends no further `dl:update` broadcasts after a stop.
   const [, setTick] = useState(0);
-  // Hydrate pre-restart history exactly once (before the first effect run).
   const hydratedRef = useRef(false);
   if (!hydratedRef.current) {
     hydratedRef.current = true;
@@ -111,13 +64,9 @@ export default function useSpeedHistory(items: Item[]) {
         peaksRef.current.set(id, entry.peak);
       }
     } catch {
-      // Storage unavailable: session-only history, same as before.
     }
   }
-  // Run counter: run #1 always sees the initial empty list (list() resolves
-  // async), so stale-id cleanup + persistence only kick in from run #2 —
-  // otherwise a fresh launch would wipe hydrated history before the real
-  // download list arrives.
+  // Skip cleanup on first run (list resolves async).
   const runRef = useRef(0);
   const aliveIdsRef = useRef<Set<string>>(new Set());
   aliveIdsRef.current = new Set(items.map((i) => i.id));
@@ -167,9 +116,6 @@ export default function useSpeedHistory(items: Item[]) {
     for (const it of items) {
       const isActive = it.status === 'downloading' || it.status === 'merging';
       if (!isActive) {
-        // Trailing zero so a stopped/paused/completed download visibly drops
-        // to zero. Pushed immediately (no 1Hz throttle) and only once — after
-        // the first zero, last.bps === 0 so nothing more is appended.
         const prev = samplesRef.current.get(it.id);
         if (prev && prev.length > 0) {
           const plast = prev[prev.length - 1];
@@ -190,15 +136,11 @@ export default function useSpeedHistory(items: Item[]) {
       const last = arr[arr.length - 1];
       peaksRef.current.set(it.id, Math.max(peaksRef.current.get(it.id) || 0, bps));
       if (!last || now - last.t >= SAMPLE_MS) {
-        // Progress counter reset (redownload/retry from zero): old smoothing
-        // describes a different transfer — drop it so ETA snaps fresh.
         if (last && done < last.done - 1) {
           etaBpsRef.current.delete(it.id);
           etaSecRef.current.delete(it.id);
         }
         let next = [...arr];
-        // Resume after a pause: hold the flat zero line up to right now, then
-        // the live sample below draws the straight vertical jump from 0.
         if (last && last.bps === 0 && bps > 0 && now - last.t > RESUME_ANCHOR_GAP_MS) {
           next.push({ t: now, bps: 0, done });
         }
@@ -206,7 +148,6 @@ export default function useSpeedHistory(items: Item[]) {
         while (next.length > MAX_SAMPLES) next.shift();
         samplesRef.current.set(it.id, next);
 
-        // --- stabilized ETA update (1Hz) ---
         if (total > 0) {
           const remaining = Math.max(0, total - done);
           if (remaining <= 0) {
@@ -215,13 +156,8 @@ export default function useSpeedHistory(items: Item[]) {
           } else {
             const longRate = progressRate(next, ETA_WINDOW_MS, ETA_MIN_SPAN_MS);
             const shortRate = progressRate(next, ETA_SHORT_WINDOW_MS, ETA_SHORT_MIN_SPAN_MS);
-            // Prefer the responsive short window when it has enough span;
-            // otherwise use the stable long window. This keeps the countdown
-            // honest at the tail (fast current speed) while staying calm
-            // mid-download (brief stalls don't swing it).
             let rate = shortRate > 0 ? shortRate : longRate;
             if (!(rate > 0)) {
-              // Warm-up (not enough span yet): fall back to live speed, then session avg.
               if (bps > 0) {
                 rate = bps;
               } else {
@@ -241,16 +177,8 @@ export default function useSpeedHistory(items: Item[]) {
               const smoothBps =
                 prevBps == null ? rate : prevBps + (rate - prevBps) * (rate >= prevBps ? 0.4 : 0.12);
               etaBpsRef.current.set(it.id, smoothBps);
-              // For the countdown itself, never let a lagging smoothed rate
-              // overstate the tail: when the last few seconds were faster than
-              // the smoothed average, trust the faster (more recent) signal.
-              // During a genuine stall shortRate collapses to 0, so the max
-              // still holds the stable value and ETA degrades gracefully.
               let responsiveBps = smoothBps;
               if (shortRate > responsiveBps) responsiveBps = shortRate;
-              // Final stretch (last ~8% or live speed clearly faster): also
-              // consider the instantaneous backend speed so "1-2s left" can't
-              // display as "10-15s".
               const doneFrac = total > 0 ? done / total : 0;
               if ((doneFrac >= 0.92 || remaining / responsiveBps < 10) && bps > responsiveBps) {
                 responsiveBps = bps;
@@ -261,12 +189,8 @@ export default function useSpeedHistory(items: Item[]) {
               if (prevSec == null) {
                 smoothSec = target;
               } else if (target < prevSec) {
-                // Countdown drops fast (and snaps when under ~5s) so the last
-                // seconds tick 3 → 2 → 1 instead of hovering at 10+.
                 const downAlpha = target < 5 ? 1 : target < 10 ? 0.85 : 0.55;
                 smoothSec = prevSec + (target - prevSec) * downAlpha;
-                // Never let smoothing hold the display more than a couple of
-                // seconds above what the bytes actually need.
                 const ceiling = target + (target < 10 ? 2 : target * 0.3 + 2);
                 if (smoothSec > ceiling) smoothSec = ceiling;
               } else {
@@ -281,7 +205,6 @@ export default function useSpeedHistory(items: Item[]) {
     }
     if (dirty) {
       setTick((t) => t + 1);
-      // Persist at most every few seconds — broadcasts arrive up to 10Hz.
       if (now - lastPersistRef.current >= PERSIST_MIN_MS) persistNow();
     }
   }, [items, persistNow]);

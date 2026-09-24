@@ -74,12 +74,12 @@
 .speed-meter {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   direction: ltr;
   background: linear-gradient(135deg, var(--accent-soft-bg), var(--video-box-bg));
   border: 1px solid var(--accent-soft-border);
   border-radius: 14px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   margin-bottom: 8px;
   box-shadow: var(--shadow);
   position: relative;
@@ -100,8 +100,8 @@
   box-shadow: var(--btn-primary-shadow);
 }
 .speed-meter-icon {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   flex-shrink: 0;
   display: flex;
@@ -110,6 +110,7 @@
   color: #fff;
   background: var(--speed-icon-bg);
   box-shadow: var(--speed-icon-shadow);
+  font-size: 14px;
 }
 .speed-meter-info {
   flex: 1;
@@ -119,9 +120,9 @@
   gap: 1px;
 }
 .speed-meter-label {
-  font-size: 9px;
+  font-size: 8.5px;
   font-weight: 700;
-  letter-spacing: 0.8px;
+  letter-spacing: 0.4px;
   text-transform: uppercase;
   color: var(--speed-label);
   white-space: nowrap;
@@ -129,7 +130,7 @@
   text-overflow: ellipsis;
 }
 .speed-meter-value {
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 700;
   color: var(--text);
   line-height: 1.1;
@@ -153,12 +154,13 @@
   box-shadow: 0 0 10px rgba(74,222,128,0.8);
 }
 .nav-item {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 12px; border-radius: 12px;
-  color: var(--muted); cursor: pointer; font-size: 14px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 12px;
+  color: var(--muted); cursor: pointer; font-size: 13px;
   border: 1px solid transparent;
   user-select: none;
   font-weight: 500;
+  min-width: 0;
   transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 .nav-item:hover { background: var(--hover-bg); color: var(--text); }
@@ -167,7 +169,18 @@
   border-color: var(--accent-soft-border);
   color: var(--text);
 }
-.nav-count { margin-left: auto; font-size: 12px; background: var(--count-bg); padding: 2px 8px; border-radius: 20px; color: var(--text); }
+/* Long translations (e.g. RU "Приостановленные") must truncate with an
+   ellipsis inside the fixed 240px sidebar instead of overflowing into the
+   count badge or getting clipped by .sidebar-nav overflow-x:hidden.
+   Full label stays available via title tooltip (see App.tsx). */
+.sidebar .nav-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.nav-count { margin-left: auto; font-size: 11px; background: var(--count-bg); padding: 1px 7px; border-radius: 20px; color: var(--text); flex-shrink: 0; }
 .nav-section {
   margin: 12px 8px 4px;
   font-size: 11px;

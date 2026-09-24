@@ -19,11 +19,6 @@ export function guessNameFromUrl(url: string): string {
   return 'download.bin';
 }
 
-/**
- * Direct-file extensions: pasting one of these is a plain file download,
- * not a video/audio page (yt-dlp also handles direct media, but the
- * segmented engine is faster and needs no Detect step).
- */
 const DIRECT_FILE_EXTS = new Set([
   'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'zst',
   'exe', 'msi', 'dmg', 'pkg', 'deb', 'rpm', 'apk', 'appx', 'msix',
@@ -44,13 +39,7 @@ export function isVideoPageUrl(raw: string): boolean {
     || /(youtube\.com|youtu\.be)/.test(s);
 }
 
-/**
- * Page-like links with no direct downloadable file (php/html/no extension/…
- * — anything not ending in a known file extension) that are not already known
- * video pages. These are treated as plain file downloads, but the dialog
- * offers an optional yt-dlp "Is this a video/audio page?" detect step — when
- * a video/audio is resolved the file name is renamed to the detected title.
- */
+// Page-like link that may need video detect.
 export function isPotentialVideoPageUrl(raw: string): boolean {
   const input = String(raw || '').trim();
   if (!input) return false;
@@ -105,10 +94,6 @@ export function isValidDownloadHost(hostname: string): boolean {
   return true;
 }
 
-/**
- * Accept bare domains (e.g. `abcdef.xyz/file.zip`) as well as full URLs.
- * Missing scheme defaults to https://. Throws a user-facing error otherwise.
- */
 export function normalizeDownloadUrl(raw: string, m: AppStrings['urlError'] = en.urlError): string {
   const input = String(raw || '').trim();
   if (!input) throw new Error(m.empty);
@@ -130,9 +115,6 @@ export function normalizeDownloadUrl(raw: string, m: AppStrings['urlError'] = en
     }
   }
   const candidate = hasScheme ? input : input.startsWith('//') ? `https:${input}` : `https://${input}`;
-  // Guard against WHATWG URL parsing all-numeric hosts as IPv4
-  // (e.g. "123.456" becomes 123.0.1.200): reject numeric hosts that
-  // aren't valid 4-part IPv4 before parsing.
   let rawHost = candidate.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '').split(/[/?#]/)[0];
   if (rawHost.startsWith('[')) {
     const end = rawHost.indexOf(']');
@@ -165,7 +147,6 @@ export function normalizeDownloadUrl(raw: string, m: AppStrings['urlError'] = en
 
 export const FILENAME_FALLBACK = 'download.bin';
 
-/** Extension (format) of a file name, lowercased and without the dot. '' if none. */
 export function extOf(name: string): string {
   const base = (name.split(/[\\/]/).pop() || '').trim();
   const i = base.lastIndexOf('.');
@@ -173,7 +154,5 @@ export function extOf(name: string): string {
   return base.slice(i + 1).toLowerCase();
 }
 
-// Chrome Web Store plugin used to export a fresh cookies.txt while logged in.
 export const COOKIE_EXPORTER_URL = 'https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc';
-// Full list of video/audio sites downloadable via yt-dlp (linked from New Download).
 export const SUPPORTED_SITES_URL = 'https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md';

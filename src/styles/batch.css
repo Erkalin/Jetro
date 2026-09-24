@@ -1,4 +1,7 @@
 /* ---- New Batch Download ---- */
+/* "Connections per file" label sits directly above its dropdown — keep a gap
+   so the text never sticks to the box (in any language or direction). */
+.batch-conns-label { display: block; margin-bottom: 8px; }
 .batch-stepper { display: flex; gap: 8px; align-items: stretch; }
 .batch-stepper .input { flex: 1; min-width: 0; }
 .batch-stepper-btns { display: flex; flex-direction: column; gap: 4px; }

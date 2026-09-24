@@ -1,33 +1,30 @@
 import type { DetailColId, ViewMode } from '@/types';
 
-// ---------- Downloads list viewing mode (cards vs explorer-like details) ----------
 export const DETAIL_COLS_DEFAULT: DetailColId[] = ['name', 'status', 'size', 'speed', 'eta', 'lastTry', 'queue'];
 
-// Previous default order (before the reorder to Progress … Queue). Used for a
-// one-time migration of untouched layouts in readDetailLayout below.
 const DETAIL_COLS_PREVIOUS_DEFAULT: DetailColId[] = ['name', 'queue', 'status', 'size', 'speed', 'eta', 'lastTry'];
 
 export const DETAIL_WIDTHS_DEFAULT: Record<DetailColId, number> = {
   name: 260,
   queue: 180,
-  status: 110,
+  status: 130,
   size: 160,
-  speed: 90,
-  eta: 90,
-  lastTry: 140,
+  speed: 150,
+  eta: 110,
+  lastTry: 170,
 };
 
-// Previous default speed width (before it was slimmed down). Used for migration.
+// Previous speed width, for migration.
 const SPEED_WIDTH_PREVIOUS_DEFAULT = 110;
 
 export const DETAIL_MIN_WIDTH: Record<DetailColId, number> = {
   name: 140,
   queue: 120,
-  status: 80,
+  status: 90,
   size: 110,
-  speed: 70,
-  eta: 70,
-  lastTry: 110,
+  speed: 90,
+  eta: 80,
+  lastTry: 130,
 };
 
 export const VIEW_MODE_KEY = 'jetro-view-mode';
@@ -50,7 +47,6 @@ export function readDetailLayout(): { order: DetailColId[]; widths: Record<Detai
     const order = Array.isArray(parsed.order)
       ? (parsed.order.filter((c): c is DetailColId => (DETAIL_COLS_DEFAULT as string[]).includes(String(c))) as DetailColId[])
       : [];
-    // Keep every column exactly once, appending any missing (forward-compat).
     const seen = new Set<DetailColId>();
     const clean: DetailColId[] = [];
     for (const c of order) {
@@ -74,22 +70,21 @@ export function readDetailLayout(): { order: DetailColId[]; widths: Record<Detai
       const rawSpeed = Number((parsed.widths as Record<string, unknown>).speed);
       if (Number.isFinite(rawSpeed)) storedSpeed = Math.round(rawSpeed);
     }
-    // One-time migration: layouts the user never customized (still exactly
-    // the previous default order + speed width) are upgraded to the new
-    // defaults so the new order (Queue last) and slimmer speed column apply.
-    // Any user-customized layout (reordered / resized) is left untouched.
+    // Migrate untouched layouts to new defaults.
     if (
       clean.join('|') === DETAIL_COLS_PREVIOUS_DEFAULT.join('|') &&
       (storedSpeed === undefined || storedSpeed === SPEED_WIDTH_PREVIOUS_DEFAULT)
     ) {
       return fallback;
     }
-    // One-time upgrade: the queue column default widened 140 → 180 so the
-    // queue dropdown fits in both English and Persian. Only stored layouts
-    // still on the old 140 default are bumped; resized columns are kept.
+    // Bump old stored widths to new defaults.
     try {
-      const rawQueue = Number((parsed.widths as Record<string, unknown>)?.queue);
-      if (rawQueue === 140) widths.queue = 180;
+      const w = parsed.widths as Record<string, unknown> | undefined;
+      if (Number(w?.queue) === 140) widths.queue = 180;
+      if (Number(w?.status) === 110) widths.status = 130;
+      if (Number(w?.speed) === 90) widths.speed = 150;
+      if (Number(w?.eta) === 90) widths.eta = 110;
+      if (Number(w?.lastTry) === 140) widths.lastTry = 170;
     } catch {}
     return { order: clean, widths };
   } catch {

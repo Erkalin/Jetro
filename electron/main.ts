@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, Tray, nativeImage, nativeTheme } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, Menu, Tray, nativeImage, nativeTheme, screen } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -17,11 +17,7 @@ import { execFile, execFileSync, spawn, type ChildProcess } from 'child_process'
 import { resolveYtDlp, getYtDlpVersion, updateYtDlp, ensureWritableYtDlp, consolidateYtDlpAfterUpdate, reconcileBinaries, bundledYtDlpPath, userYtDlpPath, ffmpegDir, envWithBinPath, getFfmpegVersion, getQuickjsVersion, resolveFfmpeg, resolveQuickjs } from './binaries';
 
 // Native dialog titles (alert/confirm/file pickers) use the app name, which
-// defaults to package.json "name" ("jetro"). Brand it as "Jetro" instead.
-// Must run before app.ready (Windows userData stays on the same folder:
-// the path differs by case only and Windows paths are case-insensitive).
 try { app.setName('Jetro'); } catch {}
-
 
 interface Item {
   id: string;
@@ -272,6 +268,8 @@ let settings: {
   maxConnections: number;
   maxConcurrentDownloads: number;
   downloadDir: string;
+  /** Per-category override folders for the New Download dialog ("Remember path for X"). */
+  categoryDirs: Record<string, string>;
   speedLimitKBps: number;
   autoCaptureClipboard: boolean;
   /** X-button behavior: ask every time, minimize to tray, or exit. */
@@ -292,6 +290,7 @@ let settings: {
   maxConnections: 8,
   maxConcurrentDownloads: 3,
   downloadDir: app.getPath('downloads'),
+  categoryDirs: {},
   speedLimitKBps: 0,
   autoCaptureClipboard: true,
   closeAction: 'ask',
@@ -374,13 +373,7 @@ function deleteRunValue(key: string, name: string) {
   } catch {}
 }
 
-/**
- * Delete orphaned Jetro login items left by previous installs (Windows only).
- * Uninstall never ran `setLoginItemSettings({openAtLogin:false})`, so each
- * install/uninstall cycle with "Launch at startup" on leaves a zombie Run
- * value (+ its StartupApproved ghost in Task Manager). This collapses them
- * back to at most the single live entry for the current exe.
- */
+// Delete orphaned Jetro login items left by previous installs (Windows only).
 function cleanupStaleStartupEntries() {
   try {
     if (process.platform !== 'win32') return;
@@ -446,8 +439,6 @@ function applyLaunchAtStartup() {
         opts.name = LOGIN_ITEM_NAME;
         opts.path = process.execPath;
         // Same args on enable AND disable — Electron needs the identical
-        // identity to find/remove the entry; the tray still starts minimized
-        // because the stored Run value keeps `--startup-minimized`.
         opts.args = [...LOGIN_ITEM_ARGS];
       } else if (process.platform === 'linux') {
         opts.path = process.execPath;
@@ -505,9 +496,18 @@ async function refreshNetworkRouting() {
 function loadAll() {
   try {
     fs.mkdirSync(storeDir, { recursive: true });
-    if (fs.existsSync(storeFile)) items = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
-    if (fs.existsSync(settingsFile)) settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile, 'utf8')) };
-    if (fs.existsSync(queuesFile)) queues = JSON.parse(fs.readFileSync(queuesFile, 'utf8'));
+    // Each file loads independently with shape validation + last-known-good
+    // .bak fallback: one corrupt file can no longer wipe the other two.
+    const loadedItems = readStoreJson(storeFile, `${storeFile}.bak`, Array.isArray);
+    if (loadedItems !== undefined) items = loadedItems;
+    const loadedSettings = readStoreJson(
+      settingsFile,
+      `${settingsFile}.bak`,
+      (v) => !!v && typeof v === 'object' && !Array.isArray(v),
+    );
+    if (loadedSettings !== undefined) settings = { ...settings, ...loadedSettings };
+    const loadedQueues = readStoreJson(queuesFile, `${queuesFile}.bak`, Array.isArray);
+    if (loadedQueues !== undefined) queues = loadedQueues;
     // backfill queueId / batch fields for old items
     items = items.map((i: any) => ({ queueId: null, batchId: null, batchIndex: 0, attempts: 0, nextRetryAt: null, queueOrder: Number(i?.queueOrder) || Number(i?.createdAt) || 0, ...i }));
     // Ensure every item has a numeric queueOrder (old rows fall back to createdAt).
@@ -534,15 +534,8 @@ function loadAll() {
       queues = (Array.isArray(queues) ? queues : []).map((q: any) => normalizeQueueRecord(q));
     } catch {}
     // One-time cleanup: batch queues created by older versions baked the file
-    // count into their name ("Batch – host (5 files)"). That snapshot goes
-    // stale as soon as files are added/removed (live counts now render as
-    // badges), so strip it back to the clean host name. Only exact
-    // auto-generated shapes match — user-chosen names and the " (2)"
-    // dedup suffixes are never touched.
     try {
       // Pre-seed with every current name so a stripped name dedups against
-      // queues processed later in the array too (never the reverse: existing
-      // names are never rewritten).
       const seen = new Set<string>(
         (Array.isArray(queues) ? queues : []).map((q: any) => String((q as any)?.name || '').toLowerCase()),
       );
@@ -594,9 +587,6 @@ function loadAll() {
         : i,
     );
     // Relaunch after quit/crash: no live runners exist, so anything saved
-    // mid-transfer could never progress and would show a frozen speed
-    // forever. Park interrupted transfers as paused (bytes + attempts kept,
-    // so resume continues where it left off) and zero all stale live speeds.
     items = items.map((i: any) =>
       i?.status === 'downloading' || i?.status === 'merging'
         ? { ...i, status: 'paused', speedBps: 0 }
@@ -615,17 +605,62 @@ function loadAll() {
     if (isPortableApp()) (settings as any).launchAtStartup = false;
     // a bare drive letter ("C:") is drive-relative and breaks mkdir — root it
     try { settings.downloadDir = normalizeDir(settings.downloadDir) || settings.downloadDir; } catch {}
+    // Per-category folders ("Remember path for X"): sanitize old files.
+    try { (settings as any).categoryDirs = normalizeCategoryDirs((settings as any).categoryDirs); } catch {}
     applyNativeTheme();
     try { applyLaunchAtStartup(); } catch {}
   } catch {}
 }
-function saveAllSync() {
+// Atomic JSON store: tmp+rename with .bak.
+function readStoreJson(primary: string, backup: string, validate: (v: any) => boolean): any | undefined {
+  const tryParse = (f: string): any | undefined => {
+    try {
+      if (!fs.existsSync(f)) return undefined;
+      const raw = fs.readFileSync(f, 'utf8');
+      if (!raw || !raw.trim()) return undefined;
+      const v = JSON.parse(raw);
+      return validate(v) ? v : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  return tryParse(primary) ?? tryParse(backup);
+}
+
+function writeStoreJsonSync(primary: string, backup: string, data: string) {
   try {
     fs.mkdirSync(storeDir, { recursive: true });
-    fs.writeFileSync(storeFile, JSON.stringify(items.slice(0, 500)));
-    fs.writeFileSync(settingsFile, JSON.stringify(settings));
-    fs.writeFileSync(queuesFile, JSON.stringify(queues.slice(0, 100)));
+    const tmp = `${primary}.tmp`;
+    fs.writeFileSync(tmp, data);
+    try {
+      if (fs.existsSync(primary)) fs.copyFileSync(primary, backup);
+    } catch {}
+    fs.renameSync(tmp, primary);
   } catch {}
+}
+
+/** Serialized chain so async flushes never write concurrently. */
+let saveChain: Promise<void> = Promise.resolve();
+function writeStoreJsonAsync(primary: string, backup: string, data: string) {
+  const run = async () => {
+    try {
+      await fs.promises.mkdir(storeDir, { recursive: true });
+      const tmp = `${primary}.tmp`;
+      await fs.promises.writeFile(tmp, data);
+      try {
+        if (fs.existsSync(primary)) await fs.promises.copyFile(primary, backup);
+      } catch {}
+      await fs.promises.rename(tmp, primary);
+    } catch {}
+  };
+  saveChain = saveChain.then(run, run);
+  saveChain.catch(() => {});
+}
+
+function saveAllSync() {
+  writeStoreJsonSync(storeFile, `${storeFile}.bak`, JSON.stringify((Array.isArray(items) ? items : []).slice(0, 500)));
+  writeStoreJsonSync(settingsFile, `${settingsFile}.bak`, JSON.stringify(settings));
+  writeStoreJsonSync(queuesFile, `${queuesFile}.bak`, JSON.stringify((Array.isArray(queues) ? queues : []).slice(0, 100)));
 }
 let saveTimer: NodeJS.Timeout | null = null;
 function saveAllDebounced() {
@@ -633,22 +668,16 @@ function saveAllDebounced() {
   saveTimer = setTimeout(() => {
     saveTimer = null;
     try {
-      fs.promises.mkdir(storeDir, { recursive: true }).then(() => {
-        fs.promises.writeFile(storeFile, JSON.stringify(items.slice(0, 500))).catch(() => {});
-        fs.promises.writeFile(settingsFile, JSON.stringify(settings)).catch(() => {});
-        fs.promises.writeFile(queuesFile, JSON.stringify(queues.slice(0, 100))).catch(() => {});
-      }).catch(() => {});
+      writeStoreJsonAsync(storeFile, `${storeFile}.bak`, JSON.stringify((Array.isArray(items) ? items : []).slice(0, 500)));
+      writeStoreJsonAsync(settingsFile, `${settingsFile}.bak`, JSON.stringify(settings));
+      writeStoreJsonAsync(queuesFile, `${queuesFile}.bak`, JSON.stringify((Array.isArray(queues) ? queues : []).slice(0, 100)));
     } catch {}
   }, 1000);
 }
 let lastBroadcast = 0;
 let lastTrayRefresh = 0;
 let lastTraySig = '';
-/**
- * Signature of what the tray menu shows: integer % per active download +
- * active set + quick-settings values. Rebuilding only when this changes
- * gives per-percent updates (46% -> 47%) without rebuilding 10x/sec.
- */
+// Signature of what the tray menu shows: integer % per active download +
 function trayProgressSig(): string {
   try {
     const active = items.filter((i) => i.status === 'downloading' || i.status === 'merging');
@@ -688,10 +717,6 @@ function requestTrayRefresh(immediate = false) {
 function broadcast(immediate = false) {
   const now = Date.now();
   // Coalesce 100ms progress ticks: at most 10 full-list sends/sec unless forced.
-  // Disk persistence stays debounced at ~1s via saveAllDebounced below.
-  // NOTE: tray % must still advance on coalesced ticks, so check the tray
-  // signature BEFORE the early return — otherwise 9/10 ticks never reach it
-  // and the menu looks frozen until the next forced broadcast.
   if (!immediate && now - lastBroadcast < 100) {
     saveAllDebounced();
     try { requestTrayRefresh(false); } catch {}
@@ -735,6 +760,23 @@ function normalizeDir(raw: string): string {
   return s;
 }
 
+/**
+ * Sanitize settings.categoryDirs: keep only the 6 known sidebar keys with
+ * non-empty string paths (rooting bare drive letters like downloadDir).
+ */
+function normalizeCategoryDirs(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const k of ['video', 'music', 'documents', 'archives', 'software', 'others']) {
+        const v = (raw as Record<string, unknown>)[k];
+        if (typeof v === 'string' && v.trim()) out[k] = normalizeDir(v);
+      }
+    }
+  } catch {}
+  return out;
+}
+
 /** User-facing explanation for filesystem errors (e.g. protected drive roots). */
 function friendlyFsError(e: any, dir: string): string {
   const msg = String(e?.message || e);
@@ -747,11 +789,7 @@ function friendlyFsError(e: any, dir: string): string {
   return msg;
 }
 
-/**
- * Ensure downloads can actually be written to `dir`: create it if needed and
- * probe with a temp file. Throws a user-facing error otherwise, so adds fail
- * fast in the dialog instead of erroring mid-download with raw mkdir text.
- */
+// Ensure downloads can actually be written to `dir`: create it if needed and
 function assertDirWritable(rawDir: string): string {
   const dir = normalizeDir(rawDir);
   if (!dir) throw new Error('Please choose a download folder.');
@@ -825,8 +863,6 @@ function normalizeDownloadUrl(raw: string): string {
   }
   const candidate = hasScheme ? input : input.startsWith('//') ? `https:${input}` : `https://${input}`;
   // Guard against WHATWG URL parsing all-numeric hosts as IPv4
-  // (e.g. "123.456" becomes 123.0.1.200): reject numeric hosts that
-  // aren't valid 4-part IPv4 before parsing.
   let rawHost = candidate.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, '').split(/[/?#]/)[0];
   if (rawHost.startsWith('[')) {
     const end = rawHost.indexOf(']');
@@ -1018,11 +1054,7 @@ function runPowerAction(action: string, force = false) {
     }
   } catch {}
 }
-/**
- * Legacy cap for pre-queue batches (batch items with no queueId, from before
- * each batch got its own queue). Follows the global concurrent-downloads
- * setting so old batches behave like new ones.
- */
+// Legacy cap for pre-queue batches (batch items with no queueId, from before
 function batchLimit(): number {
   const n = Number((settings as any).maxConcurrentDownloads ?? 3);
   return Math.min(10, Math.max(1, Math.round(n) || 3));
@@ -1051,10 +1083,10 @@ function normalizeTime24h(v: unknown): string {
   }
   return '';
 }
-function time24hToMinutes(v: string): number {
+function time24hToSeconds(v: string): number {
   const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(v || '').trim());
   if (!m) return NaN;
-  return Number(m[1]) * 60 + Number(m[2]);
+  return Number(m[1]) * 3600 + Number(m[2]) * 60;
 }
 function inDateWindow(q: Queue): boolean {
   try {
@@ -1089,21 +1121,32 @@ function inQueueWindow(q: Queue): boolean {
     return true;
   }
   if (!inDateWindow(q)) return false;
+  // Seconds precision so Start/Stop fire within ~1s of the set HH:MM
+  // (minute truncation used to fire the Stop up to 59s late).
   const now = new Date();
-  const cur = now.getHours() * 60 + now.getMinutes();
+  const cur = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
   if (startOn) {
-    const s = time24hToMinutes(String(q.scheduleStart || ''));
-    if (Number.isFinite(s) && cur < s) return false;
+    const s = time24hToSeconds(String(q.scheduleStart || ''));
+    if (Number.isFinite(s)) {
+      const e = stopOn ? time24hToSeconds(String(q.scheduleStop || '')) : NaN;
+      if (stopOn && Number.isFinite(e) && s > e) {
+        // Overnight range (e.g. 22:00–07:00): the morning half before e is
+        if (cur >= e && cur < s) return false;
+      } else if (cur < s) {
+        return false;
+      }
+    }
   }
   if (stopOn) {
-    const e = time24hToMinutes(String(q.scheduleStop || ''));
+    const e = time24hToSeconds(String(q.scheduleStop || ''));
     if (Number.isFinite(e)) {
-      const s = startOn ? time24hToMinutes(String(q.scheduleStart || '')) : NaN;
+      const s = startOn ? time24hToSeconds(String(q.scheduleStart || '')) : NaN;
       if (startOn && Number.isFinite(s)) {
-        // Start+stop window (overnight ranges wrap past midnight).
-        const inside = s <= e ? cur >= s && cur <= e : cur >= s || cur <= e;
+        // Start+stop window [s, e): start inclusive, stop exclusive so the
+        // Stop fires exactly at HH:MM:00 (overnight ranges wrap past midnight).
+        const inside = s <= e ? cur >= s && cur < e : cur >= s || cur < e;
         if (!inside) return false;
-      } else if (cur > e) {
+      } else if (cur >= e) {
         return false;
       }
     }
@@ -1117,12 +1160,7 @@ function queueConcurrentLimit(q: Queue): number {
   return Math.min(per, global);
 }
 
-/**
- * Enforce per-queue schedules: a running queue with a schedule only downloads
- * inside its 24h window. Active files are parked back to `queued` when the
- * window closes so the 1s pump restarts them when it re-opens (overnight
- * ranges like 22:00–07:00 work). Returns true when anything was parked.
- */
+// Enforce per-queue schedules: a running queue with a schedule only downloads
 function enforceQueueSchedules(): boolean {
   let parked = false;
   for (const q of queues) {
@@ -1152,6 +1190,54 @@ function enforceQueueSchedules(): boolean {
   return parked;
 }
 
+// Edge-triggered same-day start/stop.
+const schedPrevWin = new Map<string, boolean>();
+function scheduleEventsTick(): void {
+  try {
+    for (const q of queues) {
+      const qid = (q as any)?.id as string;
+      if (!qid) continue;
+      const startOn = (q as any)?.startAtEnabled !== undefined ? !!(q as any).startAtEnabled : !!(q as any)?.schedulerEnabled;
+      const stopOn = (q as any)?.stopAtEnabled !== undefined ? !!(q as any).stopAtEnabled : !!(q as any)?.schedulerEnabled;
+      if (!startOn && !stopOn) {
+        if (schedPrevWin.has(qid)) schedPrevWin.delete(qid);
+        continue;
+      }
+      let inWin = true;
+      try {
+        inWin = inQueueWindow(q);
+      } catch {
+        continue;
+      }
+      const prev = schedPrevWin.get(qid);
+      if (prev === undefined) {
+        // First sighting (boot / new queue): remember, then apply today's
+        schedPrevWin.set(qid, inWin);
+        try {
+          if (inWin && startOn && !q.running && queueHasWork(qid)) startQueueById(qid);
+        } catch {}
+        continue;
+      }
+      if (prev === inWin) continue;
+      // Record BEFORE firing: start/stop re-enter pumpQueue, and the inner
+      // tick must see the new state (no double fire).
+      schedPrevWin.set(qid, inWin);
+      try {
+        if (!prev && inWin) {
+          if (startOn && !q.running && queueHasWork(qid)) startQueueById(qid);
+        } else if (prev && !inWin) {
+          if (stopOn && q.running) stopQueueById(qid);
+        }
+      } catch {}
+    }
+    // Evict deleted queues so the map can't grow.
+    if (schedPrevWin.size > queues.length + 8) {
+      const live = new Set(queues.map((x) => (x as any)?.id));
+      for (const id of [...schedPrevWin.keys()]) if (!live.has(id)) schedPrevWin.delete(id);
+    }
+  } catch {}
+}
+
 /** Route a queued item to the right engine. Segmented URLs must never go to
  * yt-dlp and page URLs must never go to the segmented engine. */
 async function startQueuedItem(item: Item): Promise<void> {
@@ -1165,19 +1251,20 @@ async function startQueuedItem(item: Item): Promise<void> {
   }
 }
 async function pumpQueue() {
+  // Fire same-day schedule edges first (auto start/stop at HH:MM:00), so the
+  // running flags already reflect the window before parking/pumping below.
+  try { scheduleEventsTick(); } catch {}
   // Park anything running outside its queue's schedule window first, so closing
   // windows actually stop downloads (and re-opening windows resume them).
   enforceQueueSchedules();
   // Global (no-queue) downloads — singles first, then legacy batches in
-  // From→To order. Legacy batch groups share the global concurrent-downloads
-  // limit: at most that many files of the same batch download at once;
-  // whichever finishes first frees a slot for the next file in the batch.
-  // New batches live in their own queue (see batch:add) and are governed by
-  // the global concurrent-downloads setting instead.
   {
     const now = Date.now();
     const retryReady = (i: Item) => !i.nextRetryAt || Number(i.nextRetryAt) <= now;
-    const queuedSingles = items.filter((i) => i.status === 'queued' && !(i.queueId || null) && !(i.batchId || null) && retryReady(i));
+    const queuedSingles = items
+      .filter((i) => i.status === 'queued' && !(i.queueId || null) && !(i.batchId || null) && retryReady(i))
+      // FIFO: oldest added starts first. items[] itself is newest-first
+      .sort((a, b) => (Number(a.createdAt ?? 0) - Number(b.createdAt ?? 0)) || (Number((a as any)?.queueOrder ?? 0) - Number((b as any)?.queueOrder ?? 0)));
     while (activeCount() < settings.maxConcurrentDownloads && queuedSingles.length) {
       const next = queuedSingles.shift()!;
       startQueuedItem(next).catch(() => {});
@@ -1206,8 +1293,6 @@ async function pumpQueue() {
     }
   }
   // Per-queue downloads: only when queue is running + in its schedule window.
-  // Each queue drains in queueOrder (Up = earlier) and is capped by its own
-  // "Download N files at the same time" value (global stays a hard ceiling).
   for (const q of queues) {
     if (!q.running) continue;
     if (!inQueueWindow(q)) continue;
@@ -1307,8 +1392,6 @@ async function startDownload(item: Item) {
 
 function resolveAppIcon(): string | undefined {
   // NOTE: `electron dist-electron/main.js` sets getAppPath() to dist-electron,
-  // and packaged apps hide files inside app.asar (native icons need real files),
-  // so probe every plausible location and skip anything inside an asar archive.
   const candidates = [
     path.join(app.getAppPath(), 'build', 'icon.ico'),
     path.join(app.getAppPath(), '..', 'build', 'icon.ico'),
@@ -1360,7 +1443,8 @@ function createWindow() {
   win.once('ready-to-show', () => {
     try {
       // Launched from OS startup: stay in the tray, don't pop a window.
-      if (startedMinimized()) {
+      // Launched via jetro:// link: only the download dialog pops up.
+      if (startedMinimized() || coldProtocolLaunch) {
         try { win?.hide(); } catch {}
       } else {
         win?.show();
@@ -1373,8 +1457,6 @@ function createWindow() {
     win.webContents.on('did-finish-load', () => flushPendingExternalUrl());
   } catch {}
   // X button: exit / minimize-to-tray per settings.closeAction.
-  // 'ask' notifies the renderer, which shows a styled in-app dialog
-  // (same .modal-overlay/.modal look as the other popups).
   win.on('close', (e) => {
     if (isQuitting) return;
     const action = normalizeCloseAction((settings as any).closeAction);
@@ -1427,7 +1509,7 @@ ipcMain.handle('app:close-decision', async (_e, payload?: any) => {
   return { ok: true };
 });
 
-// ---- Tray ----
+// Tray
 let tray: Tray | null = null;
 let isQuitting = false;
 let closePromptOpen = false;
@@ -1448,7 +1530,88 @@ function showMainWindow() {
   } catch {}
 }
 
-// ---- Tray menu helpers (live downloads + quick settings) ----
+// Browser download dialog: separate IDMstyle toplevel window
+let browserDialogWin: BrowserWindow | null = null;
+
+function createBrowserDialogWindow() {
+  if (browserDialogWin && !browserDialogWin.isDestroyed()) return browserDialogWin;
+  const icon = resolveAppIcon();
+  const themeChoice = normalizeTheme((settings as any).theme);
+  const startDark = themeChoice === 'system' ? nativeTheme.shouldUseDarkColors : DARK_BASE_THEMES.has(themeChoice);
+  browserDialogWin = new BrowserWindow({
+    width: 650,
+    // Height is a placeholder — the renderer reports its real content height
+    // via 'browser-dialog:resize' and the window hugs it (see handler below).
+    height: 400,
+    minWidth: 580,
+    minHeight: 340,
+    backgroundColor: THEME_BG[themeChoice] || (startDark ? '#080f20' : '#ffffff'),
+    title: 'Jetro',
+    autoHideMenuBar: true,
+    show: false,
+    ...(icon ? { icon } : {}),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  browserDialogWin.setMenu(null);
+  if (process.env.NODE_ENV === 'development') {
+    browserDialogWin.loadURL('http://localhost:5173/#browser-download');
+  } else {
+    browserDialogWin.loadFile(path.join(__dirname, '../dist/index.html'), { hash: 'browser-download' });
+  }
+  browserDialogWin.once('ready-to-show', () => {
+    try {
+      browserDialogWin?.show();
+      browserDialogWin?.focus();
+    } catch {}
+    flushPendingExternalUrl();
+  });
+  try {
+    browserDialogWin.webContents.on('did-finish-load', () => flushPendingExternalUrl());
+  } catch {}
+  browserDialogWin.on('closed', () => {
+    browserDialogWin = null;
+  });
+  return browserDialogWin;
+}
+
+// Browser dialog dynamic height: hug the content, grow with video UI
+const BD_MIN_CONTENT_H = 280;
+const BD_MAX_CONTENT_H = 760;
+ipcMain.on('browser-dialog:resize', (_e, rawH?: number) => {
+  try {
+    const win = browserDialogWin;
+    if (!win || win.isDestroyed()) return;
+    const want = Math.round(Number(rawH) || 0);
+    if (!want || want < 50 || want > 3000) return;
+    let workH = 900;
+    try {
+      workH = screen.getPrimaryDisplay()?.workAreaSize?.height || 900;
+    } catch {}
+    const maxH = Math.max(340, Math.min(BD_MAX_CONTENT_H, workH - 60));
+    const target = Math.max(BD_MIN_CONTENT_H, Math.min(maxH, want));
+    const [curW, curH] = win.getContentSize();
+    if (Math.abs(curH - target) < 2) return;
+    win.setContentSize(curW, target, false);
+  } catch {}
+});
+
+function focusBrowserDialogWindow() {
+  try {
+    if (browserDialogWin && !browserDialogWin.isDestroyed()) {
+      if (!browserDialogWin.isVisible()) browserDialogWin.show();
+      if (browserDialogWin.isMinimized()) browserDialogWin.restore();
+      browserDialogWin.focus();
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+// Tray menu helpers (live downloads + quick settings)
 /** Speed-limit presets (KB/s, 0 = unlimited). Mirrors SPEED_LIMIT_VALUES in src/lib/options.ts. */
 const TRAY_SPEED_LIMITS = [0, 100, 256, 512, 1024, 2048, 5120, 10240];
 /** Max auto-retry choices (0–10). Mirrors normalizeRetrySettings clamping. */
@@ -1688,13 +1851,11 @@ function ensureTray(): boolean {
   }
 }
 
-// ---- Browser extension: jetro:// protocol handoff ----
-// Extension (extension/background.js) sends `jetro://add?url=<enc>&source=..`.
-// The OS launches Jetro with that URL (cold start via process.argv, warm via
-// second-instance argv, macOS via open-url). We focus the window and forward
-// to the renderer, which opens New Download pre-filled + auto-resolves
-// (direct probe or yt-dlp video probe).
+// Browser extension: jetro:// protocol handoff
 let pendingExternalUrls: { url: string; source: string }[] = [];
+// True when the app was launched by a jetro:// link: the main window stays
+// hidden and only the browser download dialog appears (IDM-style).
+let coldProtocolLaunch = false;
 
 function parseJetroProtocolUrl(raw: string): { url: string; source: string } | null {
   try {
@@ -1732,18 +1893,40 @@ function extractJetroUrlFromArgv(argv: string[]): string | null {
 function deliverExternalUrl(url: string, source: string) {
   const cleanUrl = String(url || '').trim();
   if (!cleanUrl) return;
-  showMainWindow();
   const payload = { url: cleanUrl, source: String(source || 'page') };
+  // Prefer the live dialog window.
   try {
-    if (win && !win.isDestroyed() && win.webContents && !win.webContents.isLoading()) {
-      win.webContents.send('external-url', payload);
+    if (browserDialogWin && !browserDialogWin.isDestroyed()) {
+      if (browserDialogWin.webContents && !browserDialogWin.webContents.isLoading()) {
+        browserDialogWin.webContents.send('external-url', payload);
+      } else {
+        pendingExternalUrls.push(payload);
+        if (pendingExternalUrls.length > 20) pendingExternalUrls = pendingExternalUrls.slice(-20);
+      }
+      focusBrowserDialogWindow();
       return;
     }
   } catch {}
-  // Window not ready yet (cold start) — queue and flush on ready-to-show /
-  // did-finish-load so rapid successive links are all delivered in order.
+  // No dialog yet — queue and create it (IDM-style: only the dialog appears).
   pendingExternalUrls.push(payload);
   if (pendingExternalUrls.length > 20) pendingExternalUrls = pendingExternalUrls.slice(-20);
+  try {
+    createBrowserDialogWindow();
+  } catch {
+    // Dialog creation failed — fall back to the main window so the link
+    // is never lost (its renderer handles 'external-url' the same way).
+    try {
+      showMainWindow();
+      if (win && !win.isDestroyed() && win.webContents && !win.webContents.isLoading()) {
+        const queued = pendingExternalUrls;
+        pendingExternalUrls = [];
+        for (const p of queued) {
+          try { win.webContents.send('external-url', p); } catch {}
+        }
+        return;
+      }
+    } catch {}
+  }
   // Retry shortly in case the window becomes ready without re-firing flush.
   try {
     setTimeout(() => flushPendingExternalUrl(), 1500);
@@ -1752,8 +1935,23 @@ function deliverExternalUrl(url: string, source: string) {
 
 function flushPendingExternalUrl() {
   if (!pendingExternalUrls.length) return;
+  // Dialog window first (normal path). Never send while it is still loading
+  // (the message would be dropped) — keep queued; did-finish-load flushes.
+  try {
+    if (browserDialogWin && !browserDialogWin.isDestroyed() && browserDialogWin.webContents) {
+      if (browserDialogWin.webContents.isLoading()) return;
+      const queued = pendingExternalUrls;
+      pendingExternalUrls = [];
+      for (const payload of queued) {
+        try { browserDialogWin.webContents.send('external-url', payload); } catch {}
+      }
+      return;
+    }
+  } catch {}
+  // Fallback: main window (only when the dialog could not be created).
   try {
     if (!win || win.isDestroyed()) return;
+    if (win.webContents && win.webContents.isLoading()) return;
     const queued = pendingExternalUrls;
     pendingExternalUrls = [];
     for (const payload of queued) {
@@ -1827,14 +2025,21 @@ app.whenReady().then(() => {
     fs.mkdirSync(settings.downloadDir, { recursive: true });
   } catch {}
   // Cold start via jetro:// link (Windows passes it in process.argv).
+  // The main window stays hidden; only the download dialog appears.
   try {
     const cold = extractJetroUrlFromArgv(process.argv || []);
     if (cold) {
       const parsed = parseJetroProtocolUrl(cold);
-      if (parsed) pendingExternalUrls.push({ url: parsed.url, source: parsed.source });
+      if (parsed) {
+        coldProtocolLaunch = true;
+        pendingExternalUrls.push({ url: parsed.url, source: parsed.source });
+      }
     }
   } catch {}
   createWindow();
+  if (coldProtocolLaunch && pendingExternalUrls.length) {
+    try { createBrowserDialogWindow(); } catch {}
+  }
   ensureTray();
   try {
     nativeTheme.on('updated', () => {
@@ -1884,7 +2089,7 @@ app.on('before-quit', () => {
   for (const id of [...ytJobs.keys()]) killYtJob(id);
 });
 
-// ---- IPC ----
+// IPC
 // Shared single-download add path. Normalizes + probes + queues.
 async function addSingleDownload(rawUrl: string, opts?: any): Promise<Item> {
   const url = normalizeDownloadUrl(rawUrl);
@@ -1902,9 +2107,6 @@ async function addSingleDownload(rawUrl: string, opts?: any): Promise<Item> {
     supportsRange = p.supportsRange;
     if (!filename) filename = p.filename;
     // Hotlink-protected / expired CDN URL: the server answered with a web
-    // page (login/block/error HTML, a few KB) instead of the file. Saving it
-    // as .mp4 is what produced "a few bytes, not a video" — fail fast with a
-    // hint instead of completing a fake video.
     try {
       const ct = String((p as any)?.contentType || '').toLowerCase();
       const fn = String(filename || (p as any)?.filename || url).toLowerCase();
@@ -1995,7 +2197,7 @@ ipcMain.handle('dl:add', async (_e, url: string, opts?: any) => {
   return addSingleDownload(url, opts);
 });
 
-// ---- Batch downloads (New Batch Download: one *-pattern → many files) ----
+// Batch downloads (New Batch Download: one *pattern → many files)
 const BATCH_MAX_FILES = 200;
 
 /** Resolve one URL without downloading: normalized URL + probe (filename/size). */
@@ -2068,9 +2270,7 @@ function uniqueBatchQueueName(suggested: string): string {
   return `${base.slice(0, 50)} ${Date.now().toString(36)}`.trim();
 }
 
-/** Suggested batch queue name from the batch URLs: host only (never a file
- *  count — counts baked into names go stale the moment files are added or
- *  removed; live counts are shown as badges in the sidebar/queue menus). */
+// Suggested batch queue name from the batch URLs: host only (never a file
 function batchQueueNameFor(clean: string[]): string {
   let host = '';
   try {
@@ -2091,8 +2291,6 @@ ipcMain.handle('batch:add', async (_e, urls?: string[], opts?: any) => {
   const batchId = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   const baseTs = Date.now();
   // Every batch gets its own running queue so its files stay together instead
-  // of mixing with other downloads. Its concurrency defaults to the global
-  // concurrent-downloads setting (tweakable later via Edit Queue).
   const queueName = uniqueBatchQueueName(String(opts?.queueName || '').trim() || batchQueueNameFor(clean));
   const queue: Queue = {
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6) + 'b',
@@ -2136,9 +2334,7 @@ ipcMain.handle('batch:add', async (_e, urls?: string[], opts?: any) => {
         results[i] = { url, filename, total, supportsRange };
       }
     }));
-    // Dedup filenames inside the batch (e.g. pattern only in query string):
-    // file.zip, file (1).zip, file (2).zip …
-    // Also avoid clobbering existing list entries or files already on disk.
+    // Dedup filenames inside the batch (e.g. pattern only in query string)
     const used = new Set<string>();
     for (const it of items) {
       try {
@@ -2196,15 +2392,8 @@ ipcMain.handle('batch:add', async (_e, urls?: string[], opts?: any) => {
 ipcMain.handle('dl:pause', async (_e, id: string) => {
   const it = items.find((i) => i.id === id);
   // Merging (ffmpeg mux/extract) is atomic and can't be paused: killing it
-  // mid-merge leaves a partial final file while temp fragments look done, so
-  // the next resume restarts from scratch and the kill often lands after the
-  // merge finished ("pause doesn't work"). Treat as non-pausable — the UI
-  // grays the button out for this state.
   if (it?.status === 'merging') return;
   // yt-dlp downloads are non-pausable while downloading: killing the yt-dlp
-  // process mid-transfer is unreliable, so pause is disabled (grayed out in
-  // the UI) and ignored here. Only a queued yt-dlp item may still be paused
-  // (to keep it from starting).
   if (it?.via === 'ytdlp' && it?.status === 'downloading') return;
   clearRetryTimer(id);
   if (it) it.nextRetryAt = null;
@@ -2247,8 +2436,6 @@ ipcMain.handle('dl:resume', async (_e, id: string) => {
     return;
   }
   // Drop any stale runner left behind by a previous run (e.g. pause raced a
-  // reconnect) so startDownload actually starts fresh instead of early-returning.
-  // Never touch a healthy active run.
   if (it.status !== 'downloading') {
     const r = runners.get(id);
     if (r) {
@@ -2287,17 +2474,7 @@ async function unlinkWithRetries(target: string, attempts = 6): Promise<void> {
   }
 }
 
-/** Remove yt-dlp side-products next to the final file (split-stream fragments, subs).
- *  Siblings are matched by the file stem, so a fragment can never escape when
- *  its format id is non-numeric (sb0, hls-..., dash-...) or when yt-dlp leaves
- *  `.part-Frag` / `-FragNNN` chunks / `.ytdl` / metadata sidecars behind.
- *  Deletes use the full
- *  retry budget: on Windows the killed process often still holds a handle for
- *  a moment, and a 2-try sweep is exactly how one locked fragment survives a
- *  removal. `includeAltSourceExt` additionally drops the pre-conversion
- *  intermediate (`<stem>.webm/m4a/...` for audio-only `--extract-audio`
- *  downloads) — only for unfinished downloads, and never a path owned by
- *  another list entry. */
+// Remove yt-dlp side-products next to the final file (split-stream fragments, subs).
 async function cleanupYtDlpTemps(savePath: string, opts?: { audioOnly?: boolean; includeAltSourceExt?: boolean }): Promise<void> {
   try {
     const dir = path.dirname(savePath);
@@ -2342,16 +2519,10 @@ async function cleanupYtDlpTemps(savePath: string, opts?: { audioOnly?: boolean;
       // `.part`, `.part.`, `.part-FragNNN` (native HLS/DASH fragments).
       const isPart = /\.part($|\.|-Frag)/i.test(name);
       // In-flight HLS/DASH chunk `<tmp>-FragNNN`. This app passes `--no-part`,
-      // so tmp IS the output name: `video.mp4-Frag12` /
-      // `video.f616.mp4-Frag3`. Only the chunk in flight at kill time is left
-      // (finished ones are appended and removed), hence the single leftover.
       const isFragChunk = /-Frag\d+(\.part)?$/i.test(name);
       const isYtdl = /\.ytdl$/i.test(name);
       const isTempInfix = /\.temp\./i.test(name) || /\.tmp$/i.test(name);
       // Split-stream temps `<stem>.f<format_id>.<ext>`. Format ids are numeric
-      // on YouTube (f616/f140) but protocol-ish elsewhere (fhls-720,
-      // fdash-audio, fhttp-720, fsb0, ...). Only those shapes count, so a
-      // user's own `<stem>.final.mp4` is never mistaken for a fragment.
       const isFragId = (seg: string): boolean => /^f(?:\d|hls|dash|http|m3u8|mpd|ism|rtmp|sb)[\w-]*$/i.test(seg);
       const isFragment = isFragId(rest.split('.')[0]) || /\.f(?:\d|hls|dash|http|m3u8|mpd|ism|rtmp|sb)[\w-]*\./i.test(name);
       const isSub = subExt.test(name) || metaExt.test(name);
@@ -2366,18 +2537,13 @@ async function cleanupYtDlpTemps(savePath: string, opts?: { audioOnly?: boolean;
   } catch {}
 }
 
-/** Delayed second sweep for yt-dlp leftovers that were still locked (or still
- *  being flushed by the dying process) during the first pass. Skipped when a
- *  live entry owns the same path again (download re-added meanwhile) so the
- *  sweep can never eat a fresh download's fragments. */
+// Delayed second sweep for yt-dlp leftovers that were still locked (or still
 function scheduleYtDlpResweep(savePath: string, opts?: { audioOnly?: boolean; includeAltSourceExt?: boolean }): void {
   const target = String(savePath || '');
   if (!target) return;
   setTimeout(() => {
     try {
       // Same-path re-add, or a same-stem sibling (e.g. `video.m4a` next to a
-      // removed `video.mp4`) actively writing in the same folder — either way
-      // the sweep could eat a live download's fragments, so skip it.
       const dir = path.dirname(target);
       const base = path.basename(target);
       const dot = base.lastIndexOf('.');
@@ -2410,9 +2576,6 @@ ipcMain.handle('dl:remove', async (_e, id: string, deleteFile?: boolean) => {
   if (idx >= 0) {
     const [rm] = items.splice(idx, 1);
     // Unfinished downloads only leave a partial file + resume sidecar behind —
-    // both are useless without the list entry, so always clean them even when
-    // the UI only asked to "remove from list". Completed downloads keep the
-    // real file unless the user explicitly chose "Delete file".
     const isCompleted = rm.status === 'completed';
     const shouldDeleteMain = !!deleteFile || !isCompleted;
     if (rm.savePath) {
@@ -2441,8 +2604,6 @@ ipcMain.handle('dl:remove', async (_e, id: string, deleteFile?: boolean) => {
 });
 ipcMain.handle('dl:list', () => items);
 // Live per-connection progress + server info for the analytics view.
-// Live runner → current segments; paused/queued → resume file next to the
-// download; anything else (yt-dlp, never started) → segments: null.
 const hostIpCache = new Map<string, string | null>();
 async function resolveHostIp(host: string): Promise<string | null> {
   if (!host) return null;
@@ -2457,8 +2618,6 @@ async function resolveHostIp(host: string): Promise<string | null> {
   }
 }
 // Server geolocation, resolved exactly once per IP via a free no-key API and
-// cached (including failures, so offline hosts never trigger repeat calls).
-// Returns a { label, countryCode } pair or null when unavailable.
 const hostGeoCache = new Map<string, { label: string; countryCode: string | null } | null>();
 async function resolveHostGeo(ip: string | null): Promise<{ label: string; countryCode: string | null } | null> {
   if (!ip) return null;
@@ -2618,8 +2777,6 @@ ipcMain.handle('dl:redownload', async (_e, id: string) => {
     const sweepOpts = { audioOnly: !!(it as any).audioOnly, includeAltSourceExt: true };
     try { await cleanupYtDlpTemps(it.savePath, sweepOpts); } catch {}
     // The entry stays (re-queued): the resweep self-skips while it is live so
-    // it can never eat a restarted download's fragments; the immediate pass
-    // above (full retry budget) is the cleanup for this path.
     scheduleYtDlpResweep(it.savePath, sweepOpts);
     it.downloadedBytes = 0;
     it.status = 'queued';
@@ -2675,7 +2832,7 @@ ipcMain.handle('dl:refresh', async (_e, id: string) => {
   return it;
 });
 
-// ---- Queues ----
+// Queues
 ipcMain.handle('queue:list', () => queues);
 ipcMain.handle('queue:create', async (_e, name?: string) => {
   const clean = String(name || '').trim().slice(0, 60);
@@ -2755,6 +2912,28 @@ ipcMain.handle('queue:update', async (_e, id: string, patch: Partial<Queue>) => 
   try {
     q.schedulerEnabled = !!((q as any).startAtEnabled || (q as any).stopAtEnabled);
   } catch {}
+  // Same-day catch-up when the schedule itself was just armed/changed: a
+  try {
+    const touched = ['startAtEnabled', 'stopAtEnabled', 'scheduleMode', 'onceDate', 'weekdays', 'scheduleStart', 'scheduleStop', 'schedulerEnabled']
+      .some((k) => (patch as any)[k] !== undefined);
+    if (touched) {
+      const startOn = (q as any)?.startAtEnabled !== undefined ? !!(q as any).startAtEnabled : !!q.schedulerEnabled;
+      const stopOn = (q as any)?.stopAtEnabled !== undefined ? !!(q as any).stopAtEnabled : !!q.schedulerEnabled;
+      if (startOn || stopOn) {
+        let inWin = true;
+        try { inWin = inQueueWindow(q); } catch {}
+        // Keep the edge memory in sync so the 1s tick doesn't refire this edge.
+        try { schedPrevWin.set(q.id, inWin); } catch {}
+        if (inWin && startOn && !q.running && queueHasWork(q.id)) {
+          startQueueById(q.id);
+        } else if (!inWin && stopOn && q.running) {
+          stopQueueById(q.id);
+        }
+      } else {
+        try { schedPrevWin.delete(q.id); } catch {}
+      }
+    }
+  } catch {}
   broadcast(true);
   pumpQueue();
   return q;
@@ -2810,11 +2989,18 @@ ipcMain.handle('queue:delete', async (_e, id: string) => {
   broadcast(true);
   return true;
 });
-ipcMain.handle('queue:start', async (_e, id: string) => {
+function queueHasWork(id: string): boolean {
+  try {
+    return items.some((i) => (i.queueId || null) === id && i.status !== 'completed');
+  } catch {
+    return false;
+  }
+}
+function startQueueById(id: string): Queue {
   const q = queues.find((x) => x.id === id);
   if (!q) throw new Error('Queue not found');
   // Empty / all-completed queues have nothing to start — keep them stopped.
-  if (!items.some((i) => (i.queueId || null) === id && i.status !== 'completed')) return q;
+  if (!queueHasWork(id)) return q;
   q.running = true;
   // Re-queue its parked files so they can run
   for (const it of items.filter((i) => (i.queueId || null) === id)) {
@@ -2832,8 +3018,8 @@ ipcMain.handle('queue:start', async (_e, id: string) => {
   broadcast(true);
   pumpQueue();
   return q;
-});
-ipcMain.handle('queue:stop', async (_e, id: string) => {
+}
+function stopQueueById(id: string): Queue {
   const q = queues.find((x) => x.id === id);
   if (!q) throw new Error('Queue not found');
   q.running = false;
@@ -2854,6 +3040,12 @@ ipcMain.handle('queue:stop', async (_e, id: string) => {
   }
   broadcast(true);
   return q;
+}
+ipcMain.handle('queue:start', async (_e, id: string) => {
+  return startQueueById(id);
+});
+ipcMain.handle('queue:stop', async (_e, id: string) => {
+  return stopQueueById(id);
 });
 ipcMain.handle('settings:get', () => settings);
 ipcMain.handle('app:is-portable', () => isPortableApp());
@@ -2884,11 +3076,11 @@ ipcMain.handle('settings:save', async (_e, s: any) => {
   delete (settings as any).batchConcurrentDownloads;
   // a bare drive letter ("C:") is drive-relative and breaks mkdir — root it
   try { settings.downloadDir = normalizeDir(settings.downloadDir) || settings.downloadDir; } catch {}
+  // Per-category folders ("Remember path for X category").
+  try { (settings as any).categoryDirs = normalizeCategoryDirs((settings as any).categoryDirs); } catch {}
   applyNativeTheme();
   refreshTrayMenu();
   // Live-apply the speed limit: running segmented downloads keep the snapshot
-  // they started with, so push the new value — otherwise changing the limit
-  // mid-download looks like it "doesn't work".
   try {
     const limitBps = Math.max(0, Math.round(Number((settings as any).speedLimitKBps || 0))) * 1024;
     runners.forEach((dl) => {
@@ -2901,9 +3093,6 @@ ipcMain.handle('settings:save', async (_e, s: any) => {
   return settings;
 });
 // Full reset: stop everything, wipe downloads / queues / settings back to
-// factory defaults and persist. Downloaded files on disk are kept — only the
-// app state (list entries, resume sidecars, settings) is cleared. The
-// renderer clears its own localStorage and reloads afterwards.
 ipcMain.handle('app:reset-all', async () => {
   try {
     for (const id of [...ytJobs.keys()]) {
@@ -2923,8 +3112,6 @@ ipcMain.handle('app:reset-all', async () => {
     runners.clear();
   } catch {}
   // Drop resume sidecars so reset entries can never be half-resurrected.
-  // The real files stay untouched on disk. yt-dlp fragments/subs are temp
-  // waste, not user files, so clean those too while entries still exist.
   for (const it of items) {
     try {
       if (it?.savePath) fs.unlinkSync(it.savePath + '.jetro.json');
@@ -2999,12 +3186,10 @@ function compareVersions(a: string, b: string): number {
 }
 
 function getAppVersion(): string {
-  const FALLBACK = '1.2.0';
+  const FALLBACK = '1.3.0';
   try {
     const electronVer = String((process.versions as any)?.electron || '').trim();
     // package.json is authoritative — app.getVersion() returns the Electron
-    // version (e.g. 33.4.11) when running dev as `electron dist-electron/main.js`
-    // because the app path has no package.json.
     const candidates: string[] = [];
     try { candidates.push(path.join(app.getAppPath(), 'package.json')); } catch {}
     candidates.push(path.join(__dirname, '..', 'package.json'));
@@ -3194,23 +3379,11 @@ ipcMain.handle('file:reveal', async (_e, savePath?: string) => {
 });
 
 // Video + audio grabber (no quality cap, full bundle: yt-dlp + ffmpeg merge + QuickJS/system runtime).
-// Probe lists every available video height (144p..4K/8K, whatever the page offers)
-// plus best audio-only options; split streams are merged by yt-dlp at download time.
-// Cookies are fully automatic: probe/download first try without cookies. Only when
-// yt-dlp reports a login/cookie error does the UI show the manual cookies.txt
-// paste/file box. No browser picker — `--cookies-from-browser` is legacy-only.
-/** Legacy allowlist for old queued items that still carry cookiesFromBrowser. Not exposed in UI. */
 const COOKIE_BROWSERS = new Set(['brave', 'chrome', 'chromium', 'edge', 'firefox', 'opera', 'vivaldi']);
 
 const LOGIN_NEEDED_HINT = 'This video needs login — log in on the site in your browser, export the site\u2019s cookies (cookies.txt), then paste them below or pick the file and Detect again.';
 const COOKIE_IMPORT_HINT = 'Those cookies couldn\u2019t be used — re-export a fresh cookies.txt while logged in and try again.';
-/**
- * Cookies were sent to yt-dlp but YouTube still answered LOGIN_REQUIRED /
- * "not a bot". That usually means the IP is blocked (VPN/datacenter), not the
- * cookies: YouTube blocks most VPN/proxy IPs even with a valid session — a
- * stale export, logged-out export, or IP switch between export and resolve
- * are the remaining causes.
- */
+// Cookies were sent to yt-dlp but YouTube still answered LOGIN_REQUIRED /
 const COOKIE_REJECTED_HINT = 'Those cookies were sent but YouTube still blocked the resolve — this is usually the VPN/proxy, not the cookies: YouTube blocks most datacenter/VPN IPs. Turn the VPN off (or switch to a residential server/IP), stay on the same IP you exported the cookies on, re-export fresh while logged in, and Detect again.';
 
 /** Extra line naming the actual routing when the resolve went out via proxy/VPN. */
@@ -3248,13 +3421,7 @@ function looksLikeCookiesTxt(content: string): boolean {
     || (t.split('\n').some((l) => (l.match(/\t/g) || []).length >= 5));
 }
 
-/**
- * True when a cookies.txt export actually contains a YouTube login session
- * (auth cookies), not just a logged-out VISITOR_INFO / PREF row. Catches the
- * most common "paste succeeds but YouTube still says sign in" case: the file
- * was exported while logged out, from an incognito window, or the wrong
- * browser profile.
- */
+// True when a cookies.txt export actually contains a YouTube login session
 function hasYoutubeAuthCookies(content: string): boolean {
   const t = String(content || '');
   if (!/youtube\.com/i.test(t)) return false;
@@ -3338,15 +3505,7 @@ function ytDlpCookieArgs(opts?: any, pageUrl?: string): { args: string[]; error?
   return { args: [], usedCookies: false };
 }
 
-/**
- * Explicit JS runtime flags for yt-dlp. Two pitfalls avoided:
- * 1. `--js-runtimes quickjs:node:deno` parses as runtime `quickjs` with path
- *    `node:deno` (colon = path separator), so no runtime was ever enabled.
- * 2. The bundled quickjs.exe is only picked up by full path — a bare
- *    `quickjs` on PATH still reports as unavailable.
- * Without a working runtime, YouTube signature/n-challenge solving fails and
- * formats go missing ("page needs to be reloaded").
- */
+// Explicit JS runtime flags for yt-dlp. Two pitfalls avoided
 function ytDlpJsRuntimeArgs(): string[] {
   const out: string[] = [];
   try {
@@ -3362,12 +3521,7 @@ function ytDlpJsRuntimeArgs(): string[] {
   return out;
 }
 
-/**
- * YouTube player-client fallback. `web_safari` + `web_embedded` avoid the
- * `web` client's proof-of-origin bot-check while still authenticating like a
- * normal browser session (safe with cookies, unlike `tv`). `-tv_downgraded`
- * opts out of the downgraded-TV fallback formats.
- */
+// YouTube player-client fallback. `web_safari` + `web_embedded` avoid the
 function ytDlpYoutubeClientArgs(pageUrl: string, _usedCookies?: boolean): string[] {
   if (!/youtube\.com|youtu\.be/i.test(String(pageUrl || ''))) return [];
   void _usedCookies;
@@ -3484,8 +3638,6 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
         const title = String(j.title || '').slice(0, 120);
         const topDuration = Number((j as any)?.duration || 0);
         // Size of one yt-dlp format: exact `filesize` wins, otherwise
-        // `filesize_approx` (bitrate x duration, often printed with `~`),
-        // otherwise a tbr x duration fallback. 0 = unknown.
         const sizeOf = (f: any): { bytes: number; approx: boolean } => {
           const exact = Number(f?.filesize || 0);
           if (exact > 0) return { bytes: Math.round(exact), approx: false };
@@ -3497,11 +3649,6 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
           return { bytes: 0, approx: true };
         };
         // Progressive (single-file) heights — kept only for size estimates.
-        // NOTE: extractor CDN URLs are never downloaded directly (see fmts
-        // mapping below): they expire quickly, often need Referer/cookies,
-        // and are frequently HLS (.m3u8) playlists whose text is only a few
-        // KB — downloading them with the segmented engine is what used to
-        // produce "a few bytes, not a video" on adult/cdn sites.
         const isHlsOrDashFormat = (f: any): boolean => {
           const proto = String(f?.protocol || '').toLowerCase();
           const furl = String(f?.url || '').toLowerCase();
@@ -3566,12 +3713,6 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
           .sort((a, b) => a - b)
           .map((h) => {
             // All extractor formats go through yt-dlp (page URL + height
-            // selector) — never a direct segmented download of the extracted
-            // CDN URL. Direct URLs expire, need Referer/cookies, or are HLS
-            // playlists (a few KB of text), which is why adult-site qualities
-            // used to complete as tiny non-video files while YouTube (always
-            // split → yt-dlp) worked. yt-dlp re-extracts fresh at download
-            // time with the right headers and HLS/DASH support.
             const p = h > 0 ? progUrl.get(h) : null;
             const ps = p ? sizeOf(p) : { bytes: 0, approx: true };
             // Split stream: final mp4 ~= best video (+ba) + best audio.
@@ -3579,8 +3720,6 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
             const vs = v ? sizeOf(v) : { bytes: 0, approx: true };
             const splitBytes = (vs.bytes || 0) + (bestAudioSize.bytes || 0);
             // Prefer the progressive size when the site only offers muxed
-            // files (no split streams → splitBytes is 0); otherwise the
-            // split video+audio sum is what `bv+ba` will actually fetch.
             const useProg = (ps.bytes || 0) > 0 && (splitBytes <= 0 || (ps.bytes || 0) <= splitBytes * 1.5);
             const bytes = useProg ? ps.bytes : splitBytes;
             const fps = (p?.fps ? Number(p.fps) : 0) || (v?.fps ? Number(v.fps) : undefined);
@@ -3682,8 +3821,6 @@ ipcMain.handle('video:probe', async (_e, pageUrl: string, opts?: any) => {
     };
   }
   // Page needs login (age/bot/private/members) — prompt for cookies.txt.
-  // Distinguish "no cookies sent yet" from "cookies were sent but rejected":
-  // the latter is usually a blocked VPN/proxy IP, not a missing box.
   if (isCookieLoginError(probeFailure)) {
     if (ck.usedCookies) {
       // Short human-readable hint only — raw yt-dlp lines stay in `detail`
@@ -3740,8 +3877,6 @@ function killYtJob(id: string) {
     if (pid && !j.proc.killed) {
       if (process.platform === 'win32') {
         // Synchronous tree kill: the old async execFile could return before
-        // taskkill ran, leaving ffmpeg merging/writing after the UI showed
-        // "paused" ("pause doesn't work, download keeps going").
         try { execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, timeout: 8000, stdio: ['ignore', 'ignore', 'ignore'] }); } catch {}
       }
       try { j.proc.kill('SIGKILL'); } catch {}
@@ -3750,10 +3885,7 @@ function killYtJob(id: string) {
   } catch {}
 }
 
-/** Run bundled yt-dlp to download+merge a page URL at any height (no cap), or best audio.
- * Progress comes from yt-dlp's live stdout (`--newline --progress`): file-size
- * polling alone can't work because split streams download to temp files and the
- * final `savePath` only appears at merge time (hence the old `-- / --`). */
+// Run bundled yt-dlp to download+merge a page URL at any height (no cap), or best audio.
 async function startYtDownload(item: Item) {
   if (ytJobs.has(item.id)) return;
   if (item.nextRetryAt && Number(item.nextRetryAt) > Date.now()) return;
@@ -3775,9 +3907,6 @@ async function startYtDownload(item: Item) {
     ...ytDlpRefererArgs(item.url),
   ];
   // Segmented downloads are throttled by the global token bucket; yt-dlp
-  // manages its own connections, so enforce the same global limit natively.
-  // (Applies to newly started video/audio downloads — a running yt-dlp
-  // process reads the rate once at spawn.)
   try {
     const limitKBps = Math.max(0, Math.round(Number((settings as any).speedLimitKBps || 0)));
     if (limitKBps > 0) args.push('--limit-rate', `${limitKBps}K`);
@@ -3826,10 +3955,6 @@ async function startYtDownload(item: Item) {
   broadcast(true);
   const proc = spawn(bin, args, { env: envWithBinPath(), windowsHide: true });
   // --- live progress state (see header comment) ---
-  // bv+ba downloads N temp files back-to-back; `base` accumulates finished
-  // files so the bar never jumps backwards when the next file starts.
-  // `floorTotal` is the probe estimate (video+audio sum) — the total never
-  // shrinks below it, it only grows when yt-dlp reports larger actuals.
   let progBase = 0;
   let progCurTotal = 0;
   let progHasOutput = false;
@@ -3878,8 +4003,6 @@ async function startYtDownload(item: Item) {
       return;
     }
     // e.g. "[download]  12.3% of  15.62MiB at  2.34MiB/s ETA 00:05"
-    // or   "[download]  12.3% of ~ 15.62MiB at  2.34MiB/s ETA 00:05"
-    // `~` = filesize_approx (bitrate x duration) — final is often larger.
     const m = /\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+(~\s*)?([\d.]+)\s*([KMGT]?i?B)/i.exec(line);
     if (m) {
       progHasOutput = true;

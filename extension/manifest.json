@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Jetro Resolver",
-  "version": "1.2.0",
+  "version": "1.1.0",
   "description": "Send links, media and pages to the Jetro download manager.",
   "minimum_chrome_version": "88",
   "icons": {

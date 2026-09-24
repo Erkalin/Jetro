@@ -4,6 +4,7 @@ import {
   FiClock, FiDisc, FiDownloadCloud, FiEdit2, FiExternalLink, FiFileText, FiFilm,
   FiFolder, FiGlobe, FiGrid, FiHardDrive, FiInbox, FiInfo, FiLayers, FiList, FiMoon, FiMusic, FiPause, FiPlay,
   FiPlus, FiRefreshCw, FiRotateCcw, FiSettings, FiSquare, FiSun, FiTool, FiTrash2, FiX, FiXCircle, FiZap,
+  FiZoomIn, FiZoomOut, FiHelpCircle,
 } from 'react-icons/fi';
 import { MdExtension } from 'react-icons/md';
 
@@ -62,9 +63,16 @@ import {
   stepLetter,
   validateBatchInput,
 } from '@/lib/batch';
+import {
+  categoryDirKeyForFilename,
+  getCategoryDir,
+  type CategoryDirKey,
+} from '@/lib/category';
 import { menuAnchor } from '@/lib/contextMenu';
 import { hasBackend, openExternalUrl } from '@/api/jetro';
 import OsFileIcon from '@/components/OsFileIcon';
+import BrowserDownloadDialog from '@/components/BrowserDownloadDialog';
+import BrowserDialogAutoFit from '@/components/BrowserDialogAutoFit';
 import NoticeDialog from '@/components/NoticeDialog';
 import ThemePicker from '@/components/ThemePicker';
 import LanguagePicker from '@/components/LanguagePicker';
@@ -74,20 +82,45 @@ import QueueScheduler from '@/components/QueueScheduler';
 import useEscape from '@/hooks/useEscape';
 import useContextMenuNudge from '@/hooks/useContextMenuNudge';
 import useSpeedHistory from '@/hooks/useSpeedHistory';
+import useZoom from '@/hooks/useZoom';
+
+import { isEditableTarget, isTextEntryTarget } from '@/lib/shortcuts';
+import ShortcutsDialog from '@/components/ShortcutsDialog';
+
+// Default order: active > queued > paused/error > completed.
+function defaultStatusRank(status: string): number {
+  if (status === 'downloading' || status === 'merging') return 0;
+  if (status === 'queued') return 1;
+  if (status === 'paused') return 2;
+  if (status === 'error') return 3;
+  if (status === 'completed') return 4;
+  return 5;
+}
+
+function applyDefaultOrder<T extends { status: string }>(list: T[]): T[] {
+  if (list.length < 2) return list;
+  return list
+    .map((it, idx) => ({ it, idx, rank: defaultStatusRank(it.status) }))
+    .sort((a, b) => a.rank - b.rank || a.idx - b.idx)
+    .map((e) => e.it);
+}
+
+// #browser-download renders dialog only.
+const BROWSER_DIALOG_MODE =
+  typeof window !== 'undefined' &&
+  typeof window.location !== 'undefined' &&
+  window.location.hash.startsWith('#browser-download');
 
 export default function App() {
-  const { t, lang, setLang } = useLanguage();
+  const { t, lang, setLang, dir } = useLanguage();
   const localeName = lang === 'fa' ? 'fa-IR-u-ca-persian' : (LANGUAGE_MAP[lang]?.locale || undefined);
   const [items, setItems] = useState<Item[]>([]);
-  // Session speed history for the analytics view (avg / peak / graph).
   const getSpeedStats = useSpeedHistory(items);
   const [queues, setQueues] = useState<Queue[]>([]);
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
-  // Downloads list viewing mode + explorer-like details column layout (persisted).
   const [viewMode, setViewMode] = useState<ViewMode>(() => readViewMode());
-  // Downloads pagination: page size limits rendered rows so huge queues don't
-  // lag the UI. Persisted; 0 = show all (no pagination).
+  // Page size caps rows; 0 = all.
   const PAGE_SIZE_KEY = 'jetro.pageSize';
   const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
   const readPageSize = (): number => {
@@ -106,17 +139,20 @@ export default function App() {
   const detailWidths = detailLayout.widths;
   const dragColRef = useRef<DetailColId | null>(null);
   const [dropCol, setDropCol] = useState<DetailColId | null>(null);
-  // Physical drop side on the hovered header (for the insertion indicator).
   const [dropSide, setDropSide] = useState<'left' | 'right' | null>(null);
-  // Logical "insert after target" for the pending drop (derived from the
-  // pointer side + layout direction on dragover). Ref so onDrop reads fresh.
   const dropAfterRef = useRef(false);
   const dropSideRef = useRef<'left' | 'right' | null>(null);
   const resizeRef = useRef<{ col: DetailColId; startX: number; startW: number } | null>(null);
   const [showAdd, setShowAdd] = useState(false);
+  // Browser popup shares form state; only one dialog visible.
+  const [showBrowser, setShowBrowser] = useState(false);
+  const [browserSource, setBrowserSource] = useState('page');
+  const showBrowserRef = useRef(false);
+  const browserSourceRef = useRef('page');
+  const [pendingBrowserAdds, setPendingBrowserAdds] = useState<PendingAdd[]>([]);
+  const pendingBrowserAddsRef = useRef<PendingAdd[]>([]);
+  const browserLaterRef = useRef(false);
   const [showSettings, setShowSettings] = useState(false);
-  // When Settings is opened from the New Download proxy guidance, scroll to
-  // and briefly highlight the Proxy section so the user lands in the right place.
   const [settingsFocusProxy, setSettingsFocusProxy] = useState(false);
   const [proxyHighlight, setProxyHighlight] = useState(false);
   const proxySectionRef = useRef<HTMLDivElement | null>(null);
@@ -124,41 +160,33 @@ export default function App() {
   const [urlError, setUrlError] = useState('');
   const [newFilename, setNewFilename] = useState('');
   const [filenameError, setFilenameError] = useState('');
-  // Authoritative file name detected for the current link (via backend probe).
   const [probedFilename, setProbedFilename] = useState('');
   const [probedOk, setProbedOk] = useState(false);
-  // Set when the user's file name changes the format vs. the detected one.
   const [pendingFormatConfirm, setPendingFormatConfirm] = useState<null | {
     url: string; finalName: string; detectedName: string; detExt: string; finalExt: string;
   }>(null);
-  // True once the user manually edits the file name box (stops auto-fill).
   const filenameTouchedRef = useRef(false);
-  // Mirror of showSettings for the tray-settings subscription (mounted once).
   const showSettingsRef = useRef(false);
-  // Refs for the clipboard listener (registered once) + fill-on-open logic.
   const showAddRef = useRef(false);
   const newUrlRef = useRef('');
   const settingsRef = useRef<any>(null);
   const pendingClipboardRef = useRef('');
-  // Stack of New Download links that arrived while another New Download dialog
-  // was already open (e.g. rapid jetro:// handoffs / pastes). Newest arrival is
-  // shown on top; closing (cancel or successful add) restores the previous one
-  // instead of losing it. LIFO so "close new reveals previous".
-  type PendingAdd = { url: string; savePath: string; queueId: string };
+  // Stacked New Download links (LIFO).
+  type PendingAdd = { url: string; savePath: string; queueId: string; rememberPath?: boolean; source?: string };
   const [pendingAdds, setPendingAdds] = useState<PendingAdd[]>([]);
   const pendingAddsRef = useRef<PendingAdd[]>([]);
   const savePathRef = useRef('');
   const newQueueIdRef = useRef('');
-  // Browser-extension handoff (jetro://): open New Download + auto-resolve once
-  // per arrival. Direct files resolve via the existing debounced probe effect;
-  // video pages auto-run detectVideo() (yt-dlp) below.
+  // jetro:// handoff: auto-resolve once per arrival.
   const externalAutoRef = useRef<{ url: string; nonce: number } | null>(null);
   const detectVideoRef = useRef<(() => Promise<void>) | null>(null);
   const [newConns, setNewConns] = useState(8);
   const [savePath, setSavePath] = useState('');
   const [newQueueId, setNewQueueId] = useState('');
   const [adding, setAdding] = useState(false);
-  // ---------- New Batch Download ----------
+  const [rememberCategoryPath, setRememberCategoryPath] = useState(false);
+  const rememberCategoryPathRef = useRef(false);
+  const savePathTouchedRef = useRef(false);
   const [showBatch, setShowBatch] = useState(false);
   const [batchUrl, setBatchUrl] = useState('');
   const [batchError, setBatchError] = useState('');
@@ -175,24 +203,15 @@ export default function App() {
   const [batchRows, setBatchRows] = useState<BatchResolveRow[]>([]);
   const [batchResolving, setBatchResolving] = useState(false);
   const [batchAdding, setBatchAdding] = useState(false);
-  // Manual override: the optional "Is this a video/audio page?" prompt on
-  // page-like links (non-file URLs) flips this on and runs the yt-dlp Detect
-  // flow. Known video pages never need it.
+  // Manual video override.
   const [forceVideo, setForceVideo] = useState(false);
-  // Effective video-page flag: heuristic + manual override.
   const isVideoPage = isVideoPageUrl(newUrl) || forceVideo;
-  // Video + audio (yt-dlp + ffmpeg, no quality cap): detected options for a page URL.
-  // All page-extracted qualities download via yt-dlp (fresh resolve + headers +
-  // HLS support). Only a true direct media URL (same as the pasted link) uses
-  // the segmented engine.
+  // Detected page qualities.
   const [videoFormats, setVideoFormats] = useState<VideoFormat[]>([]);
   const [videoLoading, setVideoLoading] = useState(false);
   const [videoHint, setVideoHint] = useState('');
   const [videoDetail, setVideoDetail] = useState('');
-  // True when the last probe failure is proxy-relevant (network/unreachable or
-  // unknown error) — the UI then points at Settings > Proxy.
   const [videoProxyHint, setVideoProxyHint] = useState(false);
-  // Raw error log is hidden behind a "Show details" toggle (not pasted inline).
   const [showVideoDetail, setShowVideoDetail] = useState(false);
   const [videoTitle, setVideoTitle] = useState('');
   const [selectedVideoUrl, setSelectedVideoUrl] = useState('');
@@ -206,20 +225,13 @@ export default function App() {
   const [playlist, setPlaylist] = useState<{ title: string; count: number; entries: PlaylistEntry[] } | null>(null);
   const [playlistSelected, setPlaylistSelected] = useState<Set<string>>(new Set());
   const [playlistAdding, setPlaylistAdding] = useState(false);
-  // Manual cookies.txt (shown only after yt-dlp reports a login/cookie error).
-  // Auto-resolve first: probe/download try without cookies; paste or pick a file to retry.
+  // Manual cookies.
   const [cookiesText, setCookiesText] = useState('');
   const [cookiesFile, setCookiesFile] = useState('');
   const [needsCookies, setNeedsCookies] = useState(false);
   const [cookieError, setCookieError] = useState('');
-  // Derived video flags (recomputed each render).
-  // - hasVideoSelection: a quality was picked from the detected options.
-  // - videoDetectFailed: Detect ran but found no playable formats and no
-  //   playlist — the link falls back to a plain file download.
   const hasVideoSelection = !!selectedVideoKind || selectedVideoHeight > 0 || !!selectedVideoUrl;
   const videoDetectFailed = !videoLoading && videoFormats.length === 0 && !playlist && !!videoHint && !hasVideoSelection;
-  // - videoResolved: detected options (or a pick) exist — the video flow owns
-  //   the download (queue note); otherwise the file flow does.
   const videoResolved = videoFormats.length > 0 || hasVideoSelection || !!playlist;
   const [binStatus, setBinStatus] = useState<BinaryStatus | null>(null);
   const [binRefreshing, setBinRefreshing] = useState(false);
@@ -227,12 +239,11 @@ export default function App() {
   const [isPortable, setIsPortable] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{ current: string; latest: string; updateAvailable: boolean; url: string; error?: string } | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
-  const [appVersion, setAppVersion] = useState('1.2.0');
-  // Per-session dismissal for the update banner (reset when a newer tag appears).
+  const [appVersion, setAppVersion] = useState('1.3.0');
   const [updateDismissed, setUpdateDismissed] = useState<string | null>(null);
   const showUpdateBanner = !!updateInfo?.updateAvailable && updateDismissed !== updateInfo.latest;
 
-  // ---- theme gallery: explicit id on <html data-theme>, system resolves to jetro/midnight ----
+  // theme gallery: explicit id on <html datatheme>, system resolves to jetro/midnight
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>(() => readInitialTheme());
   const resolvedMode = useMemo(() => resolveTheme(themeChoice), [themeChoice]);
   const dataTheme = useMemo(() => resolveDataTheme(themeChoice), [themeChoice]);
@@ -248,7 +259,6 @@ export default function App() {
       }
     } catch {}
   };
-  // Apply to <html data-theme> + persist locally (instant, no FOUC on next launch via index.html bootstrap).
   useEffect(() => {
     try {
       document.documentElement.setAttribute('data-theme', dataTheme);
@@ -257,7 +267,6 @@ export default function App() {
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataTheme, themeChoice]);
-  // Follow the OS while in "system" mode.
   useEffect(() => {
     if (themeChoice !== 'system') return;
     const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
@@ -277,14 +286,10 @@ export default function App() {
     const clean = normalizeTheme(next);
     setThemeChoice(clean);
     try { localStorage.setItem(THEME_KEY, clean); } catch {}
-    // Keep backend settings in sync so the choice survives reinstalls/profiles
-    // and the native window can match. Fire-and-forget for the topbar toggle.
     setSettings((prev: any) => ({ ...prev, theme: clean }));
     setDraftSettings((prev: any) => (prev ? { ...prev, theme: clean } : prev));
     try { window.jetro?.saveSettings({ theme: clean })?.catch(() => {}); } catch {}
   };
-  // Header toggle flips between light/dark bases, remembering the last theme
-  // picked per base (e.g. Dracula → Solarized → back to Dracula).
   const lastLightRef = useRef<ThemeChoice>('jetro');
   const lastDarkRef = useRef<ThemeChoice>('midnight');
   useEffect(() => {
@@ -294,7 +299,6 @@ export default function App() {
   }, [themeChoice]);
   const toggleTheme = () => applyThemeChoice(resolvedMode === 'dark' ? lastLightRef.current : lastDarkRef.current);
 
-  // Persist viewing mode + details column layout (order + widths).
   useEffect(() => {
     try { localStorage.setItem(VIEW_MODE_KEY, viewMode); } catch {}
   }, [viewMode]);
@@ -309,7 +313,6 @@ export default function App() {
       let ti = order.indexOf(to);
       if (fi < 0 || ti < 0) return prev;
       order.splice(fi, 1);
-      // Removing an earlier item shifts the target down one slot.
       if (fi < ti) ti -= 1;
       order.splice(after ? ti + 1 : ti, 0, from);
       return { ...prev, order };
@@ -325,7 +328,6 @@ export default function App() {
   const beginColResize = (e: React.MouseEvent, col: DetailColId) => {
     e.preventDefault();
     e.stopPropagation();
-    // Disable header dragging while resizing so the two gestures never fight.
     clearColDrop();
     const startX = e.clientX;
     const startW = detailWidths[col] ?? DETAIL_WIDTHS_DEFAULT[col];
@@ -333,8 +335,6 @@ export default function App() {
     const onMove = (ev: MouseEvent) => {
       const r = resizeRef.current;
       if (!r) return;
-      // Downloads list stays LTR in every language, so the resize handle
-      // is always on the right edge: dragging right widens.
       const dx = ev.clientX - r.startX;
       const next = Math.min(600, Math.max(DETAIL_MIN_WIDTH[r.col], Math.round(r.startW + dx)));
       setDetailLayout((prev) => (prev.widths[r.col] === next ? prev : { ...prev, widths: { ...prev.widths, [r.col]: next } }));
@@ -352,74 +352,59 @@ export default function App() {
     [detailOrder, detailWidths],
   );
 
-  // settings draft + unsaved-changes guard (draft is edited, `settings` stays saved until Save)
+  // Settings draft.
   const [draftSettings, setDraftSettings] = useState<any | null>(null);
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
-  // Full app reset (danger zone at the end of Settings + confirm dialog).
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState('');
 
-  // queue context menu + modals
+  // Menus.
   const [ctx, setCtx] = useState<{ x: number; y: number; queueId: string | null } | null>(null);
-  // download item right-click menu
   const [itemCtx, setItemCtx] = useState<{ x: number; y: number; itemId: string } | null>(null);
   const ctxMenuRef = useContextMenuNudge(ctx);
-  // Re-nudge when the queue count changes: the item menu lists queues
-  // (move-to-queue), so its height depends on it.
   const itemMenuRef = useContextMenuNudge(itemCtx, [queues.length]);
   const [renameState, setRenameState] = useState<{ id: string; name: string; error: string } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [propsId, setPropsId] = useState<string | null>(null);
-  // Per-download analytics modal (opened by double-click).
   const [analyticsId, setAnalyticsId] = useState<string | null>(null);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [pendingQueueMove, setPendingQueueMove] = useState<string | null>(null);
-  // Where a newly created queue should land when opened from a dropdown
-  // ("+ New queue…" inside New Download / video section). Null = default
-  // behavior (sidebar: jump filter there; item rows use pendingQueueMove).
   const [queueCreateReturn, setQueueCreateReturn] = useState<null | 'newDownload' | 'video'>(null);
   const [showQueueModal, setShowQueueModal] = useState<null | { mode: 'create' }>(null);
   const [qName, setQName] = useState('');
   const [qNameError, setQNameError] = useState('');
-  // Scheduler window (IDM-style): queueId being edited, null = closed.
+  // Scheduler window.
   const [showScheduler, setShowScheduler] = useState<string | null>(null);
-  // Per-queue power countdown (60s, cancellable) after a queue fully completes.
   const [powerDialog, setPowerDialog] = useState<{ queueId: string; queueName: string; action: QueuePowerAction; secondsLeft: number } | null>(null);
 
-  // toolbar selection + queue dropdowns
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const selectedId = selectedIds.length ? selectedIds[selectedIds.length - 1] : null;
+  const isSelected = (id: string) => selectedIds.includes(id);
+  const selectSingle = (id: string | null) => setSelectedIds(id ? [id] : []);
   const [queueMenu, setQueueMenu] = useState<null | 'start' | 'stop'>(null);
   const queueStartRef = useRef<HTMLDivElement>(null);
   const queueStopRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const { zoom, zoomIn, zoomOut, resetZoom, zoomPct } = useZoom();
 
-  // remove / delete confirmation ({ id, deleteFile }: deleteFile removes the file from disk)
-  const [pendingRemove, setPendingRemove] = useState<{ id: string; deleteFile: boolean } | null>(null);
+  const [pendingRemove, setPendingRemove] = useState<{ ids: string[]; deleteFile: boolean } | null>(null);
 
-  // In-app notice popup (replaces window.alert: native popups show the
-  // lowercase package name as title and always render LTR).
+  // In-app notice.
   const [notice, setNotice] = useState<string | null>(null);
-  // In-app delete-queue confirmation (replaces window.confirm for the same reason).
   const [pendingDeleteQueue, setPendingDeleteQueue] = useState<Queue | null>(null);
 
-  // file-exists collision: target file already on disk, ask replace / rename / cancel
   const [pendingCollision, setPendingCollision] = useState<null | {
     kind: 'file' | 'video'; url: string; filename: string; dir: string; queueId: string; height: number; videoKind?: 'video' | 'audio'; estimatedBytes?: number;
   }>(null);
 
-  // X-button close prompt (styled in-app dialog; main process asked via IPC).
   const [showClosePrompt, setShowClosePrompt] = useState(false);
   const [closeRemember, setCloseRemember] = useState(false);
 
-  // Single download-complete popup: fresh completions aggregate into one
-  // list (main file + "+n more finished"). One dismiss clears them all —
-  // no sequential popups requiring a click per file.
   const [completedQueue, setCompletedQueue] = useState<Item[]>([]);
-  // Expanded state for the "+n more finished" toggle (scrollable rest-of-queue list).
   const [completeExpanded, setCompleteExpanded] = useState(false);
   const seenCompletedRef = useRef<Set<string>>(new Set());
-  // Becomes true once the initial download list has been seeded into
-  // seenCompletedRef, so pre-existing completions never trigger a popup.
   const initialLoadDoneRef = useRef(false);
 
   useEffect(() => {
@@ -506,24 +491,38 @@ export default function App() {
       });
     });
     // Browser extension (jetro://add?url=..): focus already handled main-side.
-    // Open New Download pre-filled; auto-resolve runs in the effect below once
-    // newUrl state has flushed. If a dialog is already open, stash its link
-    // underneath so closing the new one reveals the previous (LIFO stack).
     const off7 = window.jetro!.onExternalUrl?.((info) => {
       const url = String((info as any)?.url || '').trim();
       if (!url || url.length > 2048 || /\s/.test(url)) return;
+      const source = String((info as any)?.source || '').trim().slice(0, 32) || 'page';
       const cur = (newUrlRef.current || '').trim();
-      if (showAddRef.current && cur && cur !== url) {
+      if (showBrowserRef.current && cur && cur !== url) {
+        const stack = pendingBrowserAddsRef.current || [];
+        if (!(stack.length && stack[stack.length - 1].url === cur)) {
+          const next = [...stack, {
+            url: cur,
+            savePath: savePathRef.current || '',
+            queueId: newQueueIdRef.current || '',
+            rememberPath: rememberCategoryPathRef.current,
+            source: browserSourceRef.current || 'page',
+          }].slice(-20);
+          pendingBrowserAddsRef.current = next;
+          setPendingBrowserAdds(next);
+        }
+      } else if (showAddRef.current && cur && cur !== url) {
         const stack = pendingAddsRef.current || [];
         if (!(stack.length && stack[stack.length - 1].url === cur)) {
           const next = [...stack, {
             url: cur,
             savePath: savePathRef.current || '',
             queueId: newQueueIdRef.current || '',
+            rememberPath: rememberCategoryPathRef.current,
           }].slice(-20);
           pendingAddsRef.current = next;
           setPendingAdds(next);
         }
+        setShowAdd(false);
+        showAddRef.current = false;
       }
       pendingClipboardRef.current = url;
       filenameTouchedRef.current = false;
@@ -531,11 +530,16 @@ export default function App() {
       try {
         setSavePath(settingsRef.current?.downloadDir || '');
         savePathRef.current = settingsRef.current?.downloadDir || '';
+        savePathTouchedRef.current = false;
+        setRememberCategoryPath(false);
+        rememberCategoryPathRef.current = false;
       } catch {}
       setNewQueueId('');
       newQueueIdRef.current = '';
-      setShowAdd(true);
-      showAddRef.current = true;
+      setBrowserSource(source);
+      browserSourceRef.current = source;
+      setShowBrowser(true);
+      showBrowserRef.current = true;
       setNewUrl(url);
       newUrlRef.current = url;
       externalAutoRef.current = { url, nonce: Date.now() + Math.random() };
@@ -557,6 +561,12 @@ export default function App() {
     showAddRef.current = showAdd;
   }, [showAdd]);
   useEffect(() => {
+    showBrowserRef.current = showBrowser;
+  }, [showBrowser]);
+  useEffect(() => {
+    pendingBrowserAddsRef.current = pendingBrowserAdds;
+  }, [pendingBrowserAdds]);
+  useEffect(() => {
     newUrlRef.current = newUrl;
   }, [newUrl]);
   useEffect(() => {
@@ -565,6 +575,9 @@ export default function App() {
   useEffect(() => {
     savePathRef.current = savePath;
   }, [savePath]);
+  useEffect(() => {
+    rememberCategoryPathRef.current = rememberCategoryPath;
+  }, [rememberCategoryPath]);
   useEffect(() => {
     newQueueIdRef.current = newQueueId;
   }, [newQueueId]);
@@ -583,10 +596,6 @@ export default function App() {
   }, [items, itemCtx]);
 
   // Detect newly completed downloads and queue a popup.
-  // Downloads already completed before this session was loaded are seeded
-  // into seenCompletedRef above, so only fresh completions pop up.
-  // When the popup is disabled in Settings, completions are still marked seen
-  // (so re-enabling later doesn't flood old popups) but nothing is queued.
   useEffect(() => {
     if (!initialLoadDoneRef.current) return;
     const newly = items.filter((i) => i.status === 'completed' && !seenCompletedRef.current.has(i.id));
@@ -636,7 +645,8 @@ export default function App() {
   const queueMap = useMemo(() => new Map(queues.map((q) => [q.id, q])), [queues]);
   const queueById = (id: string | null | undefined) => (id ? queueMap.get(id) : undefined);
 
-  // Details sorting (header click toggles). Null = list order.
+  // Details sorting (header click toggles). Null = default grouping
+  // (active > queued > paused/failed > completed).
   const [sort, setSort] = useState<{ col: DetailColId | 'eta'; dir: 1 | -1 } | null>(null);
 
   const filtered = useMemo(() => {
@@ -655,15 +665,16 @@ export default function App() {
         if (filter === 'queued' && i.status !== 'queued') return false;
         // Category filters
         if (filter === 'cat-video' && i.category !== 'video') return false;
+        if (filter === 'cat-music' && i.category !== 'audio') return false;
         if (filter === 'cat-documents' && i.category !== 'document') return false;
         if (filter === 'cat-archives' && i.category !== 'compressed') return false;
         if (filter === 'cat-software' && i.category !== 'program') return false;
-        if (filter === 'cat-others' && !(i.category === 'other' || i.category === 'audio')) return false;
+        if (filter === 'cat-others' && i.category !== 'other') return false;
       }
       if (q && !(i.filename + i.url).toLowerCase().includes(q)) return false;
       return true;
     });
-    if (!sort) return list;
+    if (!sort) return applyDefaultOrder(list);
     const dir = sort.dir;
     const etaOf = (it: Item): number => {
       if (it.status === 'completed') return 0;
@@ -696,7 +707,7 @@ export default function App() {
     });
   }, [items, filter, query, sort, queues]);
 
-  // ---------- Downloads pagination ----------
+  // Downloads pagination
   const totalPages = useMemo(
     () => (pageSize === 0 ? 1 : Math.max(1, Math.ceil(filtered.length / pageSize))),
     [filtered.length, pageSize]
@@ -732,11 +743,156 @@ export default function App() {
   useEffect(() => { setPage(1); }, [filter, query, pageSize]);
   useEffect(() => { if (page > totalPages) setPage(totalPages); }, [page, totalPages]);
 
-  // Single-select: click selects one download, clicking it again deselects.
+  // Multi-select: plain click singles out one download (click again deselects);
+  const suppressClickRef = useRef(false);
+  const dragSelectRef = useRef<{
+    anchorIdx: number; anchorId: string; base: string[]; mode: 'select' | 'deselect'; active: boolean; moved: boolean;
+  } | null>(null);
   const toggleSelect = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    setSelectedId((prev) => (prev === id ? null : id));
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+      return;
+    }
+    if (e.shiftKey) {
+      const ids = paged.map((i) => i.id);
+      const anchor = selectedId && ids.includes(selectedId) ? selectedId : id;
+      const a = ids.indexOf(anchor);
+      const b = ids.indexOf(id);
+      if (a < 0 || b < 0) {
+        selectSingle(id);
+        return;
+      }
+      const [lo, hi] = a <= b ? [a, b] : [b, a];
+      setSelectedIds(ids.slice(lo, hi + 1));
+      return;
+    }
+    setSelectedIds((prev) => (prev.length === 1 && prev[0] === id ? [] : [id]));
   };
+  const isDragSelectInteractive = (target: EventTarget | null) => {
+    try {
+      const el = target as HTMLElement | null;
+      if (!el || typeof (el as HTMLElement).closest !== 'function') return false;
+      return !!(el as HTMLElement).closest('button,select,input,a,textarea,[data-no-dragselect]');
+    } catch {
+      return false;
+    }
+  };
+  const beginRowDragSelect = (e: React.MouseEvent, index: number) => {
+    if (e.button !== 0 || e.shiftKey) return;
+    if (isDragSelectInteractive(e.target)) return;
+    const row = paged[index];
+    if (!row) return;
+    const additive = !!(e.ctrlKey || e.metaKey);
+    const already = selectedIds.includes(row.id);
+    dragSelectRef.current = {
+      anchorIdx: index,
+      anchorId: row.id,
+      base: additive ? [...selectedIds] : [],
+      mode: additive ? (already ? 'deselect' : 'select') : 'select',
+      active: true,
+      moved: false,
+    };
+  };
+  const beginListBackgroundDragSelect = (e: React.MouseEvent) => {
+    if (e.button !== 0 || e.shiftKey) return;
+    if (isDragSelectInteractive(e.target)) return;
+    try {
+      const el = e.target as HTMLElement;
+      if (el.closest('.details-row,.card.download-card,.details-head')) return;
+    } catch {}
+    const additive = !!(e.ctrlKey || e.metaKey);
+    dragSelectRef.current = {
+      anchorIdx: -1,
+      anchorId: '',
+      base: additive ? [...selectedIds] : [],
+      mode: 'select',
+      active: true,
+      moved: false,
+    };
+    if (!additive) setSelectedIds([]);
+  };
+  const hoverRowDragSelect = (index: number) => {
+    const d = dragSelectRef.current;
+    if (!d || !d.active) return;
+    const ids = paged.map((i) => i.id);
+    if (!ids.length) return;
+    // First row entered after a background mousedown becomes the anchor.
+    if (d.anchorIdx < 0 || !d.anchorId) {
+      const row = paged[index];
+      if (!row) return;
+      d.anchorIdx = index;
+      d.anchorId = row.id;
+      d.moved = true;
+      suppressClickRef.current = true;
+      if (d.base.length) {
+        const set = new Set([...d.base, row.id]);
+        setSelectedIds(paged.filter((p) => set.has(p.id)).map((p) => p.id).concat([...set].filter((id) => !ids.includes(id))));
+      } else {
+        setSelectedIds([row.id]);
+      }
+      return;
+    }
+    let anchor = ids.indexOf(d.anchorId);
+    if (anchor < 0) anchor = Math.min(Math.max(0, d.anchorIdx), ids.length - 1);
+    if (index === anchor && !d.moved) return;
+    d.moved = true;
+    suppressClickRef.current = true;
+    const lo = Math.min(anchor, index);
+    const hi = Math.max(anchor, index);
+    const range = ids.slice(lo, hi + 1);
+    if (d.mode === 'select') {
+      if (d.base.length) {
+        const set = new Set([...d.base, ...range]);
+        setSelectedIds(paged.filter((p) => set.has(p.id)).map((p) => p.id).concat([...set].filter((id) => !ids.includes(id))));
+      } else {
+        setSelectedIds(range);
+      }
+    } else {
+      const rm = new Set(range);
+      setSelectedIds(d.base.filter((id) => !rm.has(id)));
+    }
+  };
+  const endRowDragSelect = () => {
+    const d = dragSelectRef.current;
+    dragSelectRef.current = null;
+    if (d && d.moved) {
+      suppressClickRef.current = true;
+      setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+    }
+  };
+  // End drag on mouseup anywhere; auto-scroll the list while dragging near edges.
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const d = dragSelectRef.current;
+      if (!d || !d.active) return;
+      try {
+        const list = listRef.current;
+        if (!list) return;
+        // Inner details scroller when in details view, else the outer list.
+        const inner = list.querySelector('.details-wrap') as HTMLElement | null;
+        const scroller = inner || list;
+        const r = scroller.getBoundingClientRect();
+        const edge = 44;
+        const step = 14;
+        if (e.clientY < r.top + edge) scroller.scrollTop -= step;
+        else if (e.clientY > r.bottom - edge) scroller.scrollTop += step;
+      } catch {}
+    };
+    const onUp = () => endRowDragSelect();
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
 
   const totalSpeed = useMemo(
     () => items.reduce((a, b) => a + ((b.status === 'downloading' || b.status === 'merging') ? b.speedBps || 0 : 0), 0),
@@ -746,7 +902,7 @@ export default function App() {
     const m: Record<string, number> = {
       all: items.length,
       downloading: 0, completed: 0, failed: 0, paused: 0, queued: 0,
-      'cat-video': 0, 'cat-documents': 0, 'cat-archives': 0, 'cat-software': 0, 'cat-others': 0,
+      'cat-video': 0, 'cat-music': 0, 'cat-documents': 0, 'cat-archives': 0, 'cat-software': 0, 'cat-others': 0,
     };
     const perQueue = new Map<string, number>();
     for (const i of items) {
@@ -756,6 +912,7 @@ export default function App() {
       else if (i.status === 'paused') m.paused++;
       else if (i.status === 'queued') m.queued++;
       if (i.category === 'video') m['cat-video']++;
+      else if (i.category === 'audio') m['cat-music']++;
       else if (i.category === 'document') m['cat-documents']++;
       else if (i.category === 'compressed') m['cat-archives']++;
       else if (i.category === 'program') m['cat-software']++;
@@ -779,11 +936,57 @@ export default function App() {
   const chooseSaveFolder = async () => {
     if (!hasBackend()) return null;
     const picked = await window.jetro!.pickFolder(savePath || settings.downloadDir);
-    if (picked) setSavePath(picked);
+    if (picked) {
+      setSavePath(picked);
+      savePathTouchedRef.current = true;
+    }
     return picked;
   };
 
-  // ---------- New Batch Download logic ----------
+  // Percategory folders ("Remember path for X category")
+  const currentCategoryKey: CategoryDirKey = useMemo(() => {
+    if (!showAdd && !showBrowser) return 'others';
+    if (selectedVideoKind === 'audio') return 'music';
+    if (selectedVideoKind === 'video' || videoResolved) return 'video';
+    if (isVideoPageUrl(newUrl) || forceVideo) return 'video';
+    const name = (newFilename || '').trim() || probedFilename || guessNameFromUrl(newUrl.trim());
+    if (!name || name === FILENAME_FALLBACK) return 'others';
+    try {
+      return categoryDirKeyForFilename(name);
+    } catch {
+      return 'others';
+    }
+  }, [showAdd, showBrowser, selectedVideoKind, videoResolved, newUrl, forceVideo, newFilename, probedFilename]);
+
+  const currentCategoryLabel: string = useMemo(() => {
+    try {
+      const s = (t as unknown as { sidebar: Record<string, string> }).sidebar;
+      return s[currentCategoryKey] || currentCategoryKey;
+    } catch {
+      return currentCategoryKey;
+    }
+  }, [t, currentCategoryKey]);
+
+  const persistCategoryDir = async (key: CategoryDirKey, folder: string) => {
+    const clean = String(folder || '').trim();
+    if (!clean || !hasBackend()) return;
+    try {
+      const prev = ((settings as unknown as { categoryDirs?: Record<string, string> })?.categoryDirs) || {};
+      const next = { ...prev, [key]: clean };
+      const saved = await window.jetro!.saveSettings({ categoryDirs: next });
+      const merged = saved ? { ...settings, ...saved } : { ...settings, categoryDirs: next };
+      setSettings(merged);
+    } catch {}
+  };
+
+  const maybePersistRememberedPath = async (folder: string, key: CategoryDirKey) => {
+    if (!rememberCategoryPathRef.current) return;
+    const clean = String(folder || '').trim();
+    if (!clean) return;
+    await persistCategoryDir(key, clean);
+  };
+
+  // New Batch Download logic
   const batchValidation = useMemo(
     () => validateBatchInput(batchUrl, batchMode, batchFromNum, batchToNum, batchWildcard, batchFromLetter, batchToLetter, t.batchError),
     [batchUrl, batchMode, batchFromNum, batchToNum, batchWildcard, batchFromLetter, batchToLetter, t],
@@ -947,11 +1150,7 @@ export default function App() {
     return name;
   };
 
-  // ---------- New Download stacking (previous links survive new arrivals) ----------
-  // Clears per-link transient state so a swapped-in URL re-resolves fresh.
-  // Does NOT touch showAdd / newUrl / savePath / newQueueId (caller sets those).
-  // Pasted cookies are kept (same as URL-change behavior); only the
-  // needs-cookies flag + error are reset until yt-dlp reports again.
+  // New Download stacking (previous links survive new arrivals)
   const clearAddTransientForSwap = () => {
     setPendingCollision(null);
     setUrlError('');
@@ -996,6 +1195,7 @@ export default function App() {
       url: cur,
       savePath: savePathRef.current || '',
       queueId: newQueueIdRef.current || '',
+      rememberPath: rememberCategoryPathRef.current,
     };
     const next = [...stack, entry].slice(-20);
     pendingAddsRef.current = next;
@@ -1003,8 +1203,6 @@ export default function App() {
   };
 
   // Close the top New Download dialog: if older links are stacked underneath,
-  // restore the most recent one (LIFO) and keep the dialog open; otherwise
-  // truly close. Returns true when a previous link was restored.
   const restoreNextAddOrClose = (): boolean => {
     const stack = pendingAddsRef.current || [];
     if (stack.length) {
@@ -1016,6 +1214,9 @@ export default function App() {
       pendingClipboardRef.current = prev.url;
       setSavePath(prev.savePath || settingsRef.current?.downloadDir || '');
       savePathRef.current = prev.savePath || settingsRef.current?.downloadDir || '';
+      savePathTouchedRef.current = !!prev.savePath;
+      setRememberCategoryPath(!!prev.rememberPath);
+      rememberCategoryPathRef.current = !!prev.rememberPath;
       setNewQueueId(prev.queueId || '');
       newQueueIdRef.current = prev.queueId || '';
       setShowAdd(true);
@@ -1030,7 +1231,100 @@ export default function App() {
     return false;
   };
 
+  const stashCurrentBrowserIfNeeded = (incomingUrl: string) => {
+    const cur = (newUrlRef.current || '').trim();
+    const clean = (incomingUrl || '').trim();
+    if (!showBrowserRef.current || !cur || !clean || cur === clean) return;
+    const stack = pendingBrowserAddsRef.current || [];
+    if (stack.length && stack[stack.length - 1].url === cur) return;
+    const entry: PendingAdd = {
+      url: cur,
+      savePath: savePathRef.current || '',
+      queueId: newQueueIdRef.current || '',
+      rememberPath: rememberCategoryPathRef.current,
+      source: browserSourceRef.current || 'page',
+    };
+    const next = [...stack, entry].slice(-20);
+    pendingBrowserAddsRef.current = next;
+    setPendingBrowserAdds(next);
+  };
+
+  // Close the top browser popup: if older browser links are stacked
+  const restoreNextBrowserOrClose = (): boolean => {
+    const stack = pendingBrowserAddsRef.current || [];
+    if (stack.length) {
+      const nextStack = [...stack];
+      const prev = nextStack.pop()!;
+      pendingBrowserAddsRef.current = nextStack;
+      setPendingBrowserAdds(nextStack);
+      clearAddTransientForSwap();
+      pendingClipboardRef.current = prev.url;
+      setSavePath(prev.savePath || settingsRef.current?.downloadDir || '');
+      savePathRef.current = prev.savePath || settingsRef.current?.downloadDir || '';
+      savePathTouchedRef.current = !!prev.savePath;
+      setRememberCategoryPath(!!prev.rememberPath);
+      rememberCategoryPathRef.current = !!prev.rememberPath;
+      setNewQueueId(prev.queueId || '');
+      newQueueIdRef.current = prev.queueId || '';
+      const src = prev.source || 'page';
+      setBrowserSource(src);
+      browserSourceRef.current = src;
+      setShowBrowser(true);
+      showBrowserRef.current = true;
+      setNewUrl(prev.url);
+      newUrlRef.current = prev.url;
+      externalAutoRef.current = { url: prev.url, nonce: Date.now() + Math.random() };
+      return true;
+    }
+    browserLaterRef.current = false;
+    setShowBrowser(false);
+    showBrowserRef.current = false;
+    // Standalone dialog window: nothing left stacked — close the window.
+    if (BROWSER_DIALOG_MODE) {
+      try { window.close(); } catch {}
+    }
+    return false;
+  };
+
+  const resetBrowserDialog = () => {
+    // Successful add closes the top popup — reveal the previous stacked
+    // browser link (if any) instead of dropping it.
+    if ((pendingBrowserAddsRef.current || []).length) {
+      restoreNextBrowserOrClose();
+      return;
+    }
+    clearAddTransientForSwap();
+    setNewUrl('');
+    newUrlRef.current = '';
+    setUrlError('');
+    setSavePath('');
+    savePathRef.current = '';
+    setNewQueueId('');
+    newQueueIdRef.current = '';
+    browserLaterRef.current = false;
+    setShowBrowser(false);
+    showBrowserRef.current = false;
+    // Standalone dialog window: the download was added — close the window.
+    if (BROWSER_DIALOG_MODE) {
+      try { window.close(); } catch {}
+    }
+  };
+
+  // "Download later" helper: pause a freshly created download when the
+  const pauseIfBrowserLater = async (id: unknown) => {
+    try {
+      if (browserLaterRef.current && showBrowserRef.current && id) {
+        await window.jetro!.pause(String(id));
+      }
+    } catch {}
+  };
+
   const resetAddDialog = () => {
+    // Browser popup owns the top dialog — close its stack instead.
+    if (showBrowserRef.current) {
+      resetBrowserDialog();
+      return;
+    }
     // Successful add closes the top dialog — reveal the previous stacked link
     // (if any) instead of dropping it.
     if ((pendingAddsRef.current || []).length) {
@@ -1062,6 +1356,9 @@ export default function App() {
     setPlaylistAdding(false);
     setVideoLoading(false);
     filenameTouchedRef.current = false;
+    savePathTouchedRef.current = false;
+    setRememberCategoryPath(false);
+    rememberCategoryPathRef.current = false;
     setCookiesText('');
     setCookiesFile('');
     setNeedsCookies(false);
@@ -1082,13 +1379,19 @@ export default function App() {
       // savePath is now a folder — the file name comes from the name box.
       const folder = (presetSavePath || savePath || settings.downloadDir || '').trim();
       const qid = presetQueueId !== undefined ? presetQueueId : newQueueId;
-      await window.jetro!.addDownload(u, {
+      const created = await window.jetro!.addDownload(u, {
         connections: newConns,
         dir: folder || undefined,
         queueId: qid || null,
         filename: finalName,
         replace: replace || undefined,
       });
+      await pauseIfBrowserLater((created as any)?.id);
+      if (showBrowserRef.current) browserLaterRef.current = false;
+      try {
+        const key: CategoryDirKey = categoryDirKeyForFilename(finalName || '');
+        await maybePersistRememberedPath(folder, key);
+      } catch {}
       resetAddDialog();
     } catch (e: any) {
       setUrlError(e?.message || 'Please enter a valid link (e.g. example.com/file.zip).');
@@ -1102,7 +1405,7 @@ export default function App() {
     setAdding(true);
     setUrlError('');
     try {
-      await window.jetro!.downloadVideo({
+      const created = await window.jetro!.downloadVideo({
         pageUrl,
         height: kind === 'audio' ? 0 : height || 0,
         kind,
@@ -1114,6 +1417,11 @@ export default function App() {
         subtitles: videoSubtitles || undefined,
         ...getCookieOpts(),
       });
+      await pauseIfBrowserLater((created as any)?.id);
+      if (showBrowserRef.current) browserLaterRef.current = false;
+      try {
+        await maybePersistRememberedPath(folder, kind === 'audio' ? 'music' : 'video');
+      } catch {}
       resetAddDialog();
     } catch (e: any) {
       const msg = String(e?.message || 'Video download failed.');
@@ -1147,11 +1455,12 @@ export default function App() {
       const entries = playlist.entries.filter((en) => playlistSelected.has(String(en.url))).slice(0, 50);
       const isAudio = selectedVideoKind === 'audio';
       let added = 0;
+      const laterIds: string[] = [];
       for (let idx = 0; idx < entries.length; idx++) {
         const en = entries[idx];
         const base = sanitizeVideoFilename(en.title || videoTitle || `video ${idx + 1}`, selectedVideoExt || (isAudio ? 'mp3' : 'mp4'));
         try {
-          await window.jetro!.downloadVideo({
+          const created = await window.jetro!.downloadVideo({
             pageUrl: en.url,
             height: isAudio ? 0 : selectedVideoHeight || 0,
             kind: isAudio ? 'audio' : 'video',
@@ -1164,21 +1473,52 @@ export default function App() {
             subtitles: videoSubtitles || undefined,
             ...getCookieOpts(),
           });
+          if ((created as any)?.id) laterIds.push(String((created as any).id));
           added++;
         } catch {}
       }
+      for (const id of laterIds) await pauseIfBrowserLater(id);
+      if (showBrowserRef.current) browserLaterRef.current = false;
       if (!added) {
         setUrlError(t.newDownload.couldNotAddPlaylist);
         return;
       }
+      try {
+        await maybePersistRememberedPath(folder, isAudio ? 'music' : 'video');
+      } catch {}
       resetAddDialog();
     } finally {
       setPlaylistAdding(false);
     }
   };
 
-  const findUniqueFilename = async (dir: string, name: string): Promise<string | null> => {
-    const folder = (dir || settings.downloadDir || '').trim();
+  // Quality pickers shared by the manual dialog (inline) and the browser
+  // popup (via props) — identical behavior: select + auto-rename.
+  const pickVideoFormat = (f: VideoFormat) => {
+    setSelectedVideoUrl(f.url || '');
+    setSelectedVideoHeight(f.height || 0);
+    setSelectedVideoNeedsMerge(!!f.needsMerge);
+    setSelectedVideoKind('video');
+    setSelectedVideoExt(String(f.ext || '').toLowerCase());
+    setSelectedVideoEstimatedBytes(Math.max(0, Math.round(Number((f as any)?.estimatedBytes || 0))));
+    if (!filenameTouchedRef.current && videoTitle) setNewFilename(sanitizeVideoFilename(videoTitle, f.ext));
+  };
+
+  const pickAudioFormat = (f: VideoFormat) => {
+    setSelectedVideoUrl('');
+    setSelectedVideoHeight(0);
+    setSelectedVideoNeedsMerge(true);
+    setSelectedVideoKind('audio');
+    setSelectedVideoExt(String(f.ext || '').toLowerCase());
+    setSelectedVideoEstimatedBytes(Math.max(0, Math.round(Number((f as any)?.estimatedBytes || 0))));
+    if (!filenameTouchedRef.current && videoTitle) setNewFilename(sanitizeVideoFilename(videoTitle, f.ext));
+    else if (filenameTouchedRef.current && newFilename && extOf(newFilename) !== String(f.ext || '').toLowerCase()) {
+      const base = newFilename.slice(0, newFilename.lastIndexOf('.') > 0 ? newFilename.lastIndexOf('.') : undefined);
+      setNewFilename(`${base}.${f.ext}`);
+    }
+  };
+
+  const findUniqueFilename = async (dir: string, name: string): Promise<string | null> => {    const folder = (dir || settings.downloadDir || '').trim();
     const dot = name.lastIndexOf('.');
     const base = dot > 0 ? name.slice(0, dot) : name;
     const ext = dot > 0 ? name.slice(dot) : '';
@@ -1240,11 +1580,6 @@ export default function App() {
   const addDl = async (url?: string, presetSavePath?: string, presetQueueId?: string) => {
     if (!hasBackend()) { setNotice(t.common.runViaElectron); return; }
     // Video/audio path: a quality was picked from probeVideo.
-    // All page-extracted formats go via yt-dlp (page URL + height selector):
-    // extracted CDN URLs expire quickly, often need Referer/cookies, and are
-    // frequently HLS (.m3u8) playlists — fetching them with the segmented
-    // engine saved a few KB of text/403 HTML instead of video. Only a true
-    // direct media URL (user pasted the file itself) may use segmented.
     if (!url && isVideoPage) {
       if (!hasVideoSelection) {
         // Detect ran but found no playable formats (unsupported/private page):
@@ -1263,8 +1598,6 @@ export default function App() {
       const selTrimmed = (selectedVideoUrl || '').trim();
       const pageTrimmed = newUrl.trim();
       // True direct file: the detected URL is the URL the user pasted
-      // (e.g. https://cdn.example.com/clip.mp4). Anything else is an
-      // extractor CDN URL and must go through yt-dlp for a fresh resolve.
       const isTrueDirect = !!selTrimmed && !!pageTrimmed && selTrimmed === pageTrimmed;
       if (isAudio || selectedVideoNeedsMerge || !selTrimmed || !isTrueDirect) {
         const folderV = (savePath || settings.downloadDir || '').trim();
@@ -1295,9 +1628,6 @@ export default function App() {
       return;
     }
     // Make sure we know the original format before comparing: probe now if the
-    // background probe hasn't answered yet (e.g. user clicked Download fast).
-    // Untouched auto-fill follows the fresh probe result so a fast click on an
-    // unedited name never triggers a bogus format warning.
     let wanted = (newFilename || '').trim();
     let detected = getDetectedName();
     if (!probedOk) {
@@ -1348,9 +1678,10 @@ export default function App() {
     await requestAdd(p.url, p.detectedName);
   };
 
-  // Fresh file-name state every time the New Download dialog opens.
+  // Fresh file-name state every time a New Download dialog opens
+  // (manual or browser popup — they share the form state).
   useEffect(() => {
-    if (!showAdd) return;
+    if (!showAdd && !showBrowser) return;
     setPendingCollision(null);
     setUrlError('');
     setFilenameError('');
@@ -1375,11 +1706,30 @@ export default function App() {
     setPlaylistSelected(new Set());
     setPlaylistAdding(false);
     filenameTouchedRef.current = false;
+    savePathTouchedRef.current = false;
+    setRememberCategoryPath(false);
+    rememberCategoryPathRef.current = false;
     setNeedsCookies(false);
     setCookieError('');
     setShowVideoDetail(false);
     setForceVideo(false);
-  }, [showAdd]);
+  }, [showAdd, showBrowser]);
+
+  // Auto-fill the save folder from the remembered per-category path when the
+  // detected category changes — unless the user already picked/typed a folder.
+  useEffect(() => {
+    if ((!showAdd && !showBrowser) || savePathTouchedRef.current) return;
+    try {
+      const remembered = getCategoryDir(settings, currentCategoryKey);
+      if (remembered) {
+        setSavePath(remembered);
+        setRememberCategoryPath(true);
+      } else if (savePathTouchedRef.current === false && !savePath) {
+        // Keep global default; checkbox stays off until the user opts in.
+      }
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAdd, showBrowser, currentCategoryKey]);
 
   // Collapse the raw error log whenever a new resolve produces different
   // output (covers resetAddDialog, URL changes, and re-detects).
@@ -1388,9 +1738,6 @@ export default function App() {
   }, [videoDetail]);
 
   // Autofill the address from clipboard when the New Download dialog opens.
-  // Explicit paste-anywhere (see below) auto-opens the dialog; plain copies
-  // never auto-open — the dialog is opened manually, then the current
-  // clipboard URL (if valid) fills the address box.
   useEffect(() => {
     if (!showAdd) return;
     // Browser-extension handoff wins: onExternalUrl already put the resolved
@@ -1470,10 +1817,6 @@ export default function App() {
   };
 
   // Paste-anywhere → New Download Link Address.
-  // Ctrl+V / right-click Paste with a link outside of text fields opens the
-  // New Download dialog (if closed) and puts the link in Link Address.
-  // Pasting directly into Link Address or any other input keeps native
-  // behavior so typing/searching/renaming is never hijacked.
   useEffect(() => {
     const isEditable = (el: EventTarget | null): boolean => {
       if (!(el instanceof HTMLElement)) return false;
@@ -1500,6 +1843,18 @@ export default function App() {
       const url = extractPastedUrl(raw);
       if (!url) return;
       e.preventDefault();
+      // Browser popup open: paste replaces its link (stacked underneath),
+      // never opens the manual dialog on top of it.
+      if (showBrowserRef.current) {
+        stashCurrentBrowserIfNeeded(url);
+        pendingClipboardRef.current = url;
+        filenameTouchedRef.current = false;
+        setUrlError('');
+        setNewUrl(url);
+        newUrlRef.current = url;
+        externalAutoRef.current = { url, nonce: Date.now() + Math.random() };
+        return;
+      }
       // Stack the current link underneath so it reappears when this one closes.
       const cur = (newUrlRef.current || '').trim();
       if (showAddRef.current && cur && cur !== url.trim()) {
@@ -1509,6 +1864,7 @@ export default function App() {
             url: cur,
             savePath: savePathRef.current || '',
             queueId: newQueueIdRef.current || '',
+            rememberPath: rememberCategoryPathRef.current,
           }].slice(-20);
           pendingAddsRef.current = next;
           setPendingAdds(next);
@@ -1521,6 +1877,9 @@ export default function App() {
         try {
           setSavePath(settingsRef.current?.downloadDir || '');
           savePathRef.current = settingsRef.current?.downloadDir || '';
+          savePathTouchedRef.current = false;
+          setRememberCategoryPath(false);
+          rememberCategoryPathRef.current = false;
         } catch {
           // keep current save path on failure
         }
@@ -1539,10 +1898,8 @@ export default function App() {
   }, []);
 
   // Clear a previously picked video quality when the URL changes.
-  // A new URL gets a fresh auto-resolve attempt, so hide the cookie box until
-  // yt-dlp reports a login/cookie error for this URL (pasted cookies are kept).
   useEffect(() => {
-    if (!showAdd) return;
+    if (!showAdd && !showBrowser) return;
     setSelectedVideoUrl('');
     setSelectedVideoHeight(0);
     setSelectedVideoNeedsMerge(false);
@@ -1612,8 +1969,6 @@ export default function App() {
         }
       } else if (fmts.length > 1) {
         // Resolved to video/audio: rename the default file name to the
-        // detected title (unless the user already typed their own name).
-        // Picking a quality below re-renames with that quality's container.
         if (!filenameTouchedRef.current) {
           const t = String((r as any)?.title || fmts[0]?.title || '');
           if (t) setNewFilename(sanitizeVideoFilename(t, String(fmts[0]?.ext || 'mp4')));
@@ -1633,11 +1988,9 @@ export default function App() {
   // Latest detectVideo for the extension auto-resolve effect (avoids stale closure).
   detectVideoRef.current = detectVideo;
 
-  // Extension arrival: New Download is open + newUrl has flushed → auto-resolve.
-  // Video pages run yt-dlp Detect; direct files are covered by the debounced
-  // probe effect below, so no extra work is needed for them here.
+  // Extension arrival: a download dialog is open + newUrl has flushed →
   useEffect(() => {
-    if (!showAdd) return;
+    if (!showAdd && !showBrowser) return;
     const pending = externalAutoRef.current;
     if (!pending) return;
     if (newUrl.trim() !== pending.url.trim()) return;
@@ -1650,7 +2003,7 @@ export default function App() {
     }, 150);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showAdd, newUrl]);
+  }, [showAdd, showBrowser, newUrl]);
 
   // Video qualities are detected when the Detect button is clicked, plus
   // auto-detect for browser-extension arrivals (see effect above).
@@ -1676,11 +2029,8 @@ export default function App() {
   };
 
   // Auto-fill the file name box from the link: instant client-side guess first,
-  // then the authoritative name from the backend probe (debounced). Never
-  // overwrites a name the user typed themselves. Skipped for video pages —
-  // the file name comes from the selected quality instead.
   useEffect(() => {
-    if (!showAdd) return;
+    if (!showAdd && !showBrowser) return;
     const raw = newUrl.trim();
     if (!raw) {
       setProbedFilename('');
@@ -1718,10 +2068,13 @@ export default function App() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [newUrl, showAdd, forceVideo]);
+  }, [newUrl, showAdd, showBrowser, forceVideo]);
 
-  // Escape dismisses the format-confirm dialog (back to the New Download dialog).
+  // Escape dismisses the format-confirm dialog (back to the download dialog).
   useEscape(!!pendingFormatConfirm, () => setPendingFormatConfirm(null));
+  // Escape cancels the browser popup (stacked links are preserved, so this is
+  // lossless). Disabled while a sub-dialog owns Escape.
+  useEscape(showBrowser && !pendingFormatConfirm && !pendingCollision, () => restoreNextBrowserOrClose());
 
   // Answer the main-process X-button request (styled close dialog).
   const decideClose = async (decision: 'minimize' | 'exit' | 'cancel') => {
@@ -1739,7 +2092,7 @@ export default function App() {
     decideClose('cancel');
   });
 
-  // ---------- queue actions (backend + web-preview fallback) ----------
+  // queue actions (backend + webpreview fallback)
   const refreshQueues = async () => {
     if (!hasBackend()) return;
     try {
@@ -1829,8 +2182,6 @@ export default function App() {
   };
 
   // Open the Create Queue modal from a queue dropdown ("+ New queue…").
-  // returnTarget decides where the new queue id lands on save; moveItemId
-  // moves an existing download into it (item rows).
   const openCreateQueueFor = (returnTarget: null | 'newDownload' | 'video', moveItemId?: string | null) => {
     setQName('');
     setQNameError('');
@@ -1877,7 +2228,7 @@ export default function App() {
     }
   };
 
-  // ---------- Scheduler window actions ----------
+  // Scheduler window actions
   const saveSchedulerQueue = async (id: string, patch: Record<string, unknown>) => {
     if (hasBackend()) {
       await window.jetro!.updateQueue(id, patch);
@@ -1949,10 +2300,6 @@ export default function App() {
 
   const moveItemToQueue = async (itemId: string, queueId: string | null) => {
     // Optimistic: reflect the move instantly so the sidebar counts, the
-    // card/details queue selects and the toolbar start/stop menus all update
-    // in the same render. The backend 'dl:update' event confirms it right
-    // after (active downloads can't reach here — their move controls are
-    // disabled — so the backend never refuses these moves).
     setItems((p) => p.map((it) => (it.id === itemId ? { ...it, queueId } : it)));
     if (hasBackend()) {
       try {
@@ -1973,11 +2320,13 @@ export default function App() {
     setCtx({ ...menuAnchor(e, false), queueId });
   };
 
-  // ---------- download item right-click menu ----------
+  // download item rightclick menu
   const openItemCtx = (e: React.MouseEvent, it: Item) => {
     e.preventDefault();
     e.stopPropagation();
-    setSelectedId(it.id);
+    // Right-clicking inside the current multi-selection keeps it (so Remove /
+    // pause apply to all); otherwise focus the clicked row.
+    setSelectedIds((prev) => (prev.includes(it.id) ? prev : [it.id]));
     setCtx(null);
     setItemCtx({ ...menuAnchor(e, true), itemId: it.id });
   };
@@ -2074,8 +2423,11 @@ export default function App() {
     const it = itemCtxItem;
     setItemCtx(null);
     if (!it) return;
-    setSelectedId(it.id);
-    setPendingRemove({ id: it.id, deleteFile: it.status === 'completed' });
+    // Right-click inside a multi-selection removes the whole selection.
+    const ids = selectedIds.includes(it.id) && selectedIds.length > 1 ? [...selectedIds] : [it.id];
+    setSelectedIds(ids);
+    const anyIncomplete = ids.some((x) => items.find((i) => i.id === x)?.status !== 'completed');
+    setPendingRemove({ ids, deleteFile: !anyIncomplete });
   };
 
   const handleItemResumeStop = () => {
@@ -2091,7 +2443,7 @@ export default function App() {
     }
   };
 
-  // ---------- external tools status in Settings ----------
+  // external tools status in Settings
   const refreshBinStatus = async () => {
     if (!hasBackend()) return;
     setBinRefreshing(true);
@@ -2107,7 +2459,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showSettings]);
 
-  // ---------- settings open / save / cancel with unsaved-changes guard ----------
+  // settings open / save / cancel with unsavedchanges guard
   const openSettings = (opts?: { focusProxy?: boolean }) => {
     const copy = stripGlobalScheduler(JSON.parse(JSON.stringify(settings)));
     copy.theme = normalizeTheme(copy.theme);
@@ -2119,8 +2471,6 @@ export default function App() {
   };
 
   // Deep-link from New Download's proxy guidance: scroll the Proxy section
-  // into view and flash a highlight so the user knows where to look.
-  // The New Download dialog stays open underneath (Settings stacks on top).
   const openProxySettings = () => openSettings({ focusProxy: true });
 
   useEffect(() => {
@@ -2198,10 +2548,11 @@ export default function App() {
     try {
       if (hasBackend()) await window.jetro!.resetAll();
       try {
-        for (const k of [LANG_KEY, THEME_KEY, VIEW_MODE_KEY, DETAIL_LAYOUT_KEY, SPEED_HISTORY_KEY]) {
+        for (const k of [LANG_KEY, THEME_KEY, VIEW_MODE_KEY, DETAIL_LAYOUT_KEY, SPEED_HISTORY_KEY, 'jetro.zoom', 'jetro.appZoom']) {
           localStorage.removeItem(k);
         }
       } catch {}
+      // List zoom persists under 'jetro.zoom' (removed above); the zoom only
       window.location.reload();
     } catch (e: any) {
       setResetError(e?.message || String(e));
@@ -2227,6 +2578,7 @@ export default function App() {
 
   const categoryNav: { key: string; label: string; Icon: typeof FiBox }[] = [
     { key: 'cat-video', label: t.sidebar.video, Icon: FiFilm },
+    { key: 'cat-music', label: t.sidebar.music, Icon: FiMusic },
     { key: 'cat-documents', label: t.sidebar.documents, Icon: FiFileText },
     { key: 'cat-archives', label: t.sidebar.archives, Icon: FiArchive },
     { key: 'cat-software', label: t.sidebar.software, Icon: FiDisc },
@@ -2235,8 +2587,6 @@ export default function App() {
 
   const ctxQueue = ctx?.queueId ? queueById(ctx.queueId) : null;
   // In-app download-complete popup (toggleable in Settings, default ON).
-  // Single instance: new completions append to completedQueue and render in
-  // the "+n more" list; dismissing clears the whole queue at once.
   const showCompletePopup = (settings as any)?.showCompletePopup !== false;
   const completedPopup = showCompletePopup ? completedQueue[0] || null : null;
   const dismissCompletedPopup = () => setCompletedQueue([]);
@@ -2250,39 +2600,53 @@ export default function App() {
     if (!showCompletePopup) setCompletedQueue([]);
   }, [showCompletePopup]);
 
-  // ---------- toolbar state ----------
-  // Merging (yt-dlp + ffmpeg mux) is non-pausable: the backend ignores pause
-  // in that state, so the buttons stay grayed out instead of faking a pause
-  // while the merge keeps going. yt-dlp downloads are also non-pausable while
-  // downloading — same treatment: grayed out, backend ignores pause.
+  // toolbar state
   const isPausable = (it: { status: string; via?: string }) =>
     it.status === 'queued' || (it.status === 'downloading' && it.via !== 'ytdlp');
-  const selected = items.find((i) => i.id === selectedId) || null;
-  const canResume = !!selected && (selected.status === 'paused' || selected.status === 'error');
-  const canStop = !!selected && isPausable(selected);
+  const selected = selectedId ? items.find((i) => i.id === selectedId) || null : null;
+  const selectedItems = selectedIds
+    .map((id) => items.find((i) => i.id === id))
+    .filter((i): i is Item => !!i);
+  const canResume = selectedItems.some((i) => i.status === 'paused' || i.status === 'error');
+  const canStop = selectedItems.some((i) => isPausable(i));
   const canStopAll = items.some((i) => isPausable(i));
 
   // A queue has work when it holds at least one download that isn't finished.
-  // Empty queues and all-completed queues have nothing to start/stop: their
-  // buttons stay disabled until new downloads are added (which unlocks them).
   const queueHasWork = (queueId: string) =>
     items.some((i) => (i.queueId || null) === queueId && i.status !== 'completed');
   const canStartQueue = (q: Queue) => !q.running && queueHasWork(q.id);
   const canStopQueue = (q: Queue) => q.running && queueHasWork(q.id);
 
   useEffect(() => {
-    if (selectedId && !items.some((i) => i.id === selectedId)) setSelectedId(null);
-  }, [items, selectedId]);
+    if (selectedIds.length && !items.some((i) => selectedIds.includes(i.id))) setSelectedIds([]);
+    else if (selectedIds.length) {
+      const alive = new Set(items.map((i) => i.id));
+      if (selectedIds.some((id) => !alive.has(id))) {
+        setSelectedIds(selectedIds.filter((id) => alive.has(id)));
+      }
+    }
+  }, [items, selectedIds]);
 
-  // remove-confirmation target (live item so progress stays fresh)
-  const pendingRemoveItem = pendingRemove ? items.find((i) => i.id === pendingRemove.id) || null : null;
+  // remove-confirmation targets (live items so progress stays fresh)
+  const pendingRemoveItems = pendingRemove
+    ? pendingRemove.ids
+        .map((id) => items.find((i) => i.id === id))
+        .filter((i): i is Item => !!i)
+    : [];
+  const pendingRemoveItem = pendingRemoveItems[0] || null;
 
-  // auto-dismiss the confirm dialog if the item disappears (or completes while
-  // a cancel-confirm is open — a finished download needs no cancel prompt)
+  // auto-dismiss the confirm dialog when its items disappear (or all complete
+  // while a cancel-confirm is open — finished downloads need no cancel prompt)
   useEffect(() => {
     if (!pendingRemove) return;
-    const it = items.find((i) => i.id === pendingRemove.id);
-    if (!it || (!pendingRemove.deleteFile && it.status === 'completed')) setPendingRemove(null);
+    const alive = pendingRemove.ids.filter((id) => items.some((i) => i.id === id));
+    if (!alive.length) {
+      setPendingRemove(null);
+      return;
+    }
+    if (!pendingRemove.deleteFile && alive.every((id) => items.find((i) => i.id === id)?.status === 'completed')) {
+      setPendingRemove(null);
+    }
   }, [items, pendingRemove]);
 
   // Escape dismisses the remove-confirm dialog
@@ -2306,8 +2670,6 @@ export default function App() {
   useEscape(!!queueMenu, () => setQueueMenu(null));
 
   // close queue dropdown on outside click (document listener instead of a
-  // backdrop div: a fixed backdrop breaks inside backdrop-filter ancestors
-  // and swallows the click needed to switch directly to the other dropdown)
   useEffect(() => {
     if (!queueMenu) return;
     const handler = (e: PointerEvent) => {
@@ -2326,14 +2688,23 @@ export default function App() {
 
   // Escape dismisses the batch dialogs (not while resolving/adding)
   useEscape(showBatch, () => closeBatch());
+  // Escape dismisses the shortcuts cheat sheet.
+  useEscape(showShortcuts, () => setShowShortcuts(false));
 
   const handleResumeSelected = () => {
-    if (!canResume || !selected) return;
-    window.jetro?.resume(selected.id);
+    const targets = selectedItems.filter((i) => i.status === 'paused' || i.status === 'error');
+    if (!targets.length || !hasBackend()) return;
+    for (const it of targets) {
+      try { window.jetro?.resume(it.id); } catch {}
+    }
   };
   const handleStopSelected = () => {
-    if (!canStop || !selected) return;
-    window.jetro?.pause(selected.id);
+    // Pause every selected download that can be paused (1, 2 or 100).
+    const targets = selectedItems.filter((i) => isPausable(i));
+    if (!targets.length || !hasBackend()) return;
+    for (const it of targets) {
+      try { window.jetro?.pause(it.id); } catch {}
+    }
   };
   const handleStopAll = async () => {
     if (!canStopAll || !hasBackend()) return;
@@ -2345,6 +2716,428 @@ export default function App() {
     }
   };
 
+  // global keyboard shortcuts
+  useEffect(() => {
+    // Pause-or-resume every id individually: active -> pause, paused/failed ->
+    // resume. Completed / merging / yt-dlp-downloading rows are skipped.
+    const togglePauseResumeIds = (ids: string[]) => {
+      if (!ids.length || !hasBackend()) return;
+      for (const id of ids) {
+        const it = items.find((i) => i.id === id);
+        if (!it) continue;
+        try {
+          if (it.status === 'paused' || it.status === 'error') window.jetro?.resume(it.id);
+          else if (isPausable(it)) window.jetro?.pause(it.id);
+        } catch {}
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      const key = e.key;
+
+      // List zoom works everywhere (even inside dialogs / text fields) but
+      // only ever scales the downloads list — sidebar/topbar/dialogs stay put.
+      if (mod && (key === '+' || key === '=' || e.code === 'Equal' || e.code === 'NumpadAdd')) {
+        e.preventDefault();
+        void zoomIn();
+        return;
+      }
+      if (mod && (key === '-' || key === '_' || e.code === 'Minus' || e.code === 'NumpadSubtract')) {
+        e.preventDefault();
+        void zoomOut();
+        return;
+      }
+      if (mod && (key === '0' || e.code === 'Digit0' || e.code === 'Numpad0')) {
+        e.preventDefault();
+        void resetZoom();
+        return;
+      }
+
+      const anyModalOpen =
+        showAdd || showBrowser || showSettings || showBatch || showShortcuts ||
+        !!renameState || !!propsId || !!analyticsId || !!pendingRemove ||
+        !!pendingDeleteQueue || !!pendingCollision || !!pendingFormatConfirm ||
+        !!notice || completedQueue.length > 0 || !!powerDialog ||
+        showClosePrompt || showScheduler != null || showQueueModal != null ||
+        showDiscardConfirm || showResetConfirm;
+      const anyMenuOpen = !!ctx || !!itemCtx || !!queueMenu;
+
+      // Global Escape fallback: per-dialog hooks handle their own Escape, so
+      // this only runs when nothing else consumed it — clear transient UI.
+      if (key === 'Escape' && !anyModalOpen) {
+        if (anyMenuOpen) {
+          setCtx(null);
+          setItemCtx(null);
+          setQueueMenu(null);
+          return;
+        }
+        if (document.activeElement instanceof HTMLElement) {
+          const ae = document.activeElement;
+          // Let the search box keep its own Escape-to-clear behavior below;
+          // otherwise blur + deselect.
+          if (ae === searchRef.current) return;
+        }
+        if (selectedIds.length) setSelectedIds([]);
+        return;
+      }
+
+      // Don't hijack typing: Delete/Space/Enter/arrows/F2/F5/A/? must reach inputs.
+      if (isTextEntryTarget(e.target)) return;
+      const editable = isEditableTarget(e.target);
+
+      // Ctrl/Cmd actions (allowed in most places, but not while a modal owns input).
+      if (mod && !e.altKey) {
+        const lower = key.toLowerCase();
+        if (lower === 'n' && !anyModalOpen && !anyMenuOpen) {
+          e.preventDefault();
+          if (e.shiftKey) openBatch();
+          else {
+            setSavePath(settings.downloadDir || '');
+            savePathTouchedRef.current = false;
+            setRememberCategoryPath(false);
+            rememberCategoryPathRef.current = false;
+            setNewQueueId('');
+            setUrlError('');
+            setShowAdd(true);
+          }
+          return;
+        }
+        if (lower === 'f' && !anyModalOpen) {
+          e.preventDefault();
+          setCtx(null);
+          setItemCtx(null);
+          searchRef.current?.focus();
+          searchRef.current?.select();
+          return;
+        }
+        if (key === ',' && !anyModalOpen) {
+          e.preventDefault();
+          openSettings();
+          return;
+        }
+        if (lower === 'a' && !anyModalOpen && !anyMenuOpen && !editable) {
+          // Select all filtered downloads (across pages). Native text
+          // selection inside inputs is left alone via the editable guard.
+          e.preventDefault();
+          if (filtered.length) setSelectedIds(filtered.map((i) => i.id));
+          return;
+        }
+        if (lower === 'p' && !anyModalOpen && !e.shiftKey) {
+          // Pause/resume selection; with nothing selected, pause whatever is
+          // currently downloading (all active rows, however many).
+          e.preventDefault();
+          setCtx(null);
+          setItemCtx(null);
+          setQueueMenu(null);
+          if (selectedIds.length) togglePauseResumeIds(selectedIds);
+          else if (hasBackend()) {
+            for (const it of items.filter((i) => isPausable(i))) {
+              try { window.jetro?.pause(it.id); } catch {}
+            }
+          }
+          return;
+        }
+        // Ctrl+S belongs to the settings-style dialogs (QueueScheduler etc.) — leave it alone.
+        return;
+      }
+
+      // Item actions need no open modal/menu and must not steal form keys.
+      if (anyModalOpen || anyMenuOpen || editable) return;
+
+      if (key === 'Delete' || key === 'Backspace') {
+        if (!selectedItems.length) return;
+        // Backspace must not navigate away; Delete must not affect inputs (guarded above).
+        e.preventDefault();
+        const ids = selectedIds.filter((id) => items.some((i) => i.id === id));
+        if (!ids.length) return;
+        const allCompleted = ids.every((id) => items.find((i) => i.id === id)?.status === 'completed');
+        setPendingRemove({ ids, deleteFile: e.shiftKey || allCompleted });
+        return;
+      }
+      if (key === ' ' && selectedIds.length) {
+        // Space on a focused button keeps its native click behavior.
+        if ((e.target as HTMLElement | null)?.closest?.('button')) return;
+        e.preventDefault();
+        togglePauseResumeIds(selectedIds);
+        return;
+      }
+      if (key === 'F2' && selected) {
+        e.preventDefault();
+        setRenameState({ id: selected.id, name: selected.filename, error: '' });
+        return;
+      }
+      if (key === 'Enter' && selected) {
+        if ((e.target as HTMLElement | null)?.closest?.('button') && !e.shiftKey) return;
+        e.preventDefault();
+        // Shift+Enter = analytics, plain Enter = properties.
+        if (e.shiftKey) setAnalyticsId(selected.id);
+        else setPropsId(selected.id);
+        return;
+      }
+      if ((key === 'a' || key === 'A') && selected && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setAnalyticsId(selected.id);
+        return;
+      }
+      if (key === 'F5' && selected) {
+        e.preventDefault();
+        if (hasBackend()) {
+          setRefreshingId(selected.id);
+          window.jetro!.refreshDownload(selected.id).catch((err: any) => {
+            setNotice(err?.message || t.itemMenu.couldNotRefresh);
+          }).finally(() => setRefreshingId(null));
+        }
+        return;
+      }
+      if ((key === 'ArrowDown' || key === 'ArrowUp') && filtered.length > 0) {
+        e.preventDefault();
+        const dir = key === 'ArrowDown' ? 1 : -1;
+        const idx = filtered.findIndex((i) => i.id === selectedId);
+        const nextIdx = idx < 0 ? (dir === 1 ? 0 : filtered.length - 1) : Math.min(filtered.length - 1, Math.max(0, idx + dir));
+        const next = filtered[nextIdx];
+        if (next) {
+          if (e.shiftKey) {
+            // Extend the multi-selection instead of moving it.
+            setSelectedIds((prev) => (prev.includes(next.id) ? prev : [...prev, next.id]));
+          } else {
+            setSelectedIds([next.id]);
+          }
+          if (pageSize !== 0) {
+            const pageOf = Math.floor(nextIdx / pageSize) + 1;
+            if (pageOf !== safePage) setPage(pageOf);
+          }
+        }
+        return;
+      }
+      if (key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setShowShortcuts(true);
+        return;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  // Ctrl + mouse wheel zooms the downloads list only (pinch-style).
+  useEffect(() => {
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      try {
+        if (!listRef.current?.contains(e.target as Node)) return;
+      } catch { return; }
+      e.preventDefault();
+      if (e.deltaY < 0) void zoomIn();
+      else if (e.deltaY > 0) void zoomOut();
+    };
+    window.addEventListener('wheel', onWheel, { passive: false });
+    return () => window.removeEventListener('wheel', onWheel);
+  }, [zoomIn, zoomOut]);
+
+  // Standalone browser-download dialog window: only the popup exists here.
+  const renderBrowserDialog = (bare: boolean) => (
+        <BrowserDownloadDialog
+          t={t}
+          bare={bare}
+          standalone={BROWSER_DIALOG_MODE}
+          url={newUrl}
+          source={browserSource}
+          queuedCount={pendingBrowserAdds.length}
+          urlError={urlError}
+          filename={newFilename}
+          filenameError={filenameError}
+          probedFilename={probedFilename}
+          savePath={savePath}
+          rememberPath={rememberCategoryPath}
+          categoryLabel={currentCategoryLabel}
+          conns={newConns}
+          connsOptions={CONNECTION_OPTIONS}
+          queueId={newQueueId}
+          queues={queues}
+          videoQueueId={videoQueueId}
+          adding={adding}
+          isVideoPage={isVideoPage}
+          isKnownVideoPage={isVideoPageUrl(newUrl)}
+          isPotentialVideo={newUrl.trim() !== '' && isPotentialVideoPageUrl(newUrl)}
+          forceVideo={forceVideo}
+          videoLoading={videoLoading}
+          videoFormats={videoFormats}
+          videoHint={videoHint}
+          videoDetail={videoDetail}
+          showVideoDetail={showVideoDetail}
+          videoTitle={videoTitle}
+          videoProxyHint={videoProxyHint}
+          needsCookies={needsCookies}
+          cookiesText={cookiesText}
+          cookiesFile={cookiesFile}
+          cookieError={cookieError}
+          selectedVideoUrl={selectedVideoUrl}
+          selectedVideoHeight={selectedVideoHeight}
+          selectedVideoNeedsMerge={selectedVideoNeedsMerge}
+          selectedVideoKind={selectedVideoKind}
+          selectedVideoExt={selectedVideoExt}
+          selectedVideoEstimatedBytes={selectedVideoEstimatedBytes}
+          videoSubtitles={videoSubtitles}
+          hasVideoSelection={hasVideoSelection}
+          videoDetectFailed={videoDetectFailed}
+          videoResolved={videoResolved}
+          playlist={playlist}
+          playlistSelected={playlistSelected}
+          playlistAdding={playlistAdding}
+          proxyModeLabel={`${t.settings.proxyMode}: ${settings?.proxyMode === 'custom' ? t.settings.proxyCustom : settings?.proxyMode === 'system' ? t.settings.proxySystem : t.settings.proxyNone}`}
+          formatSize={(n) => fmtSize(n, true)}
+          cleanPastedUrl={extractPastedUrl}
+          onUrlChange={(v) => { setNewUrl(v); if (urlError) setUrlError(''); }}
+          onFilenameChange={(v) => { setNewFilename(v); filenameTouchedRef.current = true; if (filenameError) setFilenameError(''); }}
+          onSavePathChange={(v) => { setSavePath(v); savePathTouchedRef.current = true; }}
+          onPickFolder={() => { void chooseSaveFolder(); }}
+          onRememberChange={(v) => setRememberCategoryPath(v)}
+          onConnsChange={(v) => setNewConns(v)}
+          onQueueChange={(v) => setNewQueueId(v)}
+          onVideoQueueChange={(v) => setVideoQueueId(v)}
+          onCreateQueue={(target) => openCreateQueueFor(target)}
+          onForceVideoDetect={() => { setForceVideo(true); void detectVideo(); }}
+          onRevertToFile={() => setForceVideo(false)}
+          onDetectVideo={() => { void detectVideo(); }}
+          onSelectVideo={(f) => pickVideoFormat(f)}
+          onSelectAudio={(f) => pickAudioFormat(f)}
+          onSubtitlesChange={(v) => setVideoSubtitles(v)}
+          onToggleVideoDetail={() => setShowVideoDetail((v) => !v)}
+          onCookiesText={(v) => { setCookiesText(v); if (cookieError) setCookieError(''); if (urlError) setUrlError(''); }}
+          onCookiesFile={(v) => { setCookiesFile(v); if (cookieError) setCookieError(''); if (urlError) setUrlError(''); }}
+          onPickCookieFile={() => {
+            void (async () => {
+              if (!hasBackend()) return;
+              const f = await window.jetro!.pickFile();
+              if (f) {
+                setCookiesFile(f);
+                if (cookieError) setCookieError('');
+                if (urlError) setUrlError('');
+              }
+            })();
+          }}
+          onOpenCookieExtension={() => {
+            void (async () => {
+              try {
+                if (window.jetro?.openExternal) await window.jetro.openExternal(COOKIE_EXPORTER_URL);
+                else window.open(COOKIE_EXPORTER_URL, '_blank', 'noopener');
+              } catch {
+                try { window.open(COOKIE_EXPORTER_URL, '_blank', 'noopener'); } catch {}
+              }
+            })();
+          }}
+          onOpenProxySettings={() => openProxySettings()}
+          onSelectAllPlaylist={() => { if (playlist) setPlaylistSelected(new Set(playlist.entries.map((en) => String(en.url)))); }}
+          onClearPlaylist={() => setPlaylistSelected(new Set())}
+          onTogglePlaylistEntry={(key) => setPlaylistSelected((prev) => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            return next;
+          })}
+          onStartPlaylist={() => { browserLaterRef.current = false; void startPlaylistDownload(); }}
+          onStartNow={() => { browserLaterRef.current = false; void addDl(); }}
+          onDownloadLater={() => { browserLaterRef.current = true; void addDl(); }}
+          onCancel={() => { restoreNextBrowserOrClose(); }}
+        />
+  );
+
+  // Format-confirm / collision / create-queue dialogs shared by the
+  // manual dialog and the standalone browser window (identical output).
+  const renderSharedSubDialogs = () => (
+    <>
+      {pendingFormatConfirm && (
+        <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => setPendingFormatConfirm(null)}>
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <h2 className="modal-title"><FiFileText className="inline-icon" /> {t.formatConfirm.title}</h2>
+            <p>
+              {t.formatConfirm.pointsTo} {pendingFormatConfirm.detExt ? <>{t.formatConfirm.aFile(pendingFormatConfirm.detExt)}</> : t.formatConfirm.noExt}{' '}
+              (<b style={{ wordBreak: 'break-all' }}>{pendingFormatConfirm.detectedName}</b>), {t.formatConfirm.butNamed}{' '}
+              <b style={{ wordBreak: 'break-all' }}>{pendingFormatConfirm.finalName}</b>
+              {pendingFormatConfirm.finalExt ? '' : ` ${t.formatConfirm.noExtSuffix}`}. {t.formatConfirm.body}
+            </p>
+            <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" autoFocus disabled={adding} onClick={confirmFormatAnyway}>{adding ? t.newDownload.starting : t.formatConfirm.anyway}</button>
+              <button className="btn" disabled={adding} onClick={useOriginalFilename}>{t.formatConfirm.useOriginal}</button>
+              <button className="btn" disabled={adding} onClick={() => setPendingFormatConfirm(null)}>{t.common.cancel}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingCollision && (
+        <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => setPendingCollision(null)}>
+          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
+            <h2 className="modal-title"><FiFileText className="inline-icon" /> {t.collision.title}</h2>
+            <p>
+              <b style={{ wordBreak: 'break-all' }}>{pendingCollision.filename}</b> {t.collision.bodyA}{' '}
+              <b style={{ wordBreak: 'break-all' }} dir="ltr">{pendingCollision.dir || settings.downloadDir}</b>.
+              {t.collision.bodyB}
+            </p>
+            <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" autoFocus disabled={adding} onClick={() => resolveCollision('replace')}>{t.collision.replace}</button>
+              <button className="btn" disabled={adding} onClick={() => resolveCollision('rename')}>{t.collision.keepBoth}</button>
+              <button className="btn" disabled={adding} onClick={() => setPendingCollision(null)}>{t.common.cancel}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showQueueModal && (
+        <div className="modal-overlay" onClick={() => { setShowQueueModal(null); setPendingQueueMove(null); setQueueCreateReturn(null); }}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h2><FiPlus className="inline-icon" /> {t.queueModal.createTitle}</h2>
+            <p>{t.queueModal.createDesc}</p>
+            <label style={{ fontSize: 12 }}>{t.queueModal.nameLabel}</label>
+            <input
+              className="input"
+              autoFocus
+              dir="auto"
+              value={qName}
+              onChange={(e) => {
+                setQName(e.target.value);
+                if (e.target.value.trim()) setQNameError('');
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && qName.trim()) saveQueueModal();
+              }}
+              placeholder={t.queueModal.namePlaceholder}
+              style={qNameError ? { borderColor: 'var(--red)' } : undefined}
+            />
+            {qNameError && <div className="form-error">{qNameError}</div>}
+            <div className="row" style={{ marginTop: 14 }}>
+              <button
+                className="btn btn-primary"
+                onClick={saveQueueModal}
+                disabled={!qName.trim()}
+              >
+                {t.queueModal.create}
+              </button>
+              <button className="btn" onClick={() => { setShowQueueModal(null); setPendingQueueMove(null); setQueueCreateReturn(null); }}>{t.common.cancel}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
+  if (BROWSER_DIALOG_MODE) {
+    return (
+      <div className="browser-standalone">
+        <BrowserDialogAutoFit />
+        {showBrowser && !showAdd ? (
+          renderBrowserDialog(true)
+        ) : (
+          <div className="browser-standalone-empty">
+            <div className="bd-waiting-title">{t.browserDownload.title}</div>
+            <div className="bd-waiting-sub">{t.browserDownload.subtitle}</div>
+          </div>
+        )}
+        {renderSharedSubDialogs()}
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="app-bg" />
@@ -2353,15 +3146,15 @@ export default function App() {
           <div className="logo"><img src={jetroLogo} alt="Jetro" className="logo-img" draggable={false} /><span className="logo-text">Jetro</span><span className="logo-version">v{updateInfo?.current || appVersion}</span><button className="logo-settings-btn" title={t.sidebar.settingsTitle} onClick={() => openSettings()}><FiSettings size={16} /></button></div>
           <div className="sidebar-nav">
             {statusNav.map(({ key, label, Icon }) => (
-              <div key={key} className={'nav-item' + (filter === key ? ' active' : '')} onClick={() => setFilter(key)}>
-                <span className="nav-label"><Icon className="nav-icon" />{label}</span>
+              <div key={key} className={'nav-item' + (filter === key ? ' active' : '')} onClick={() => setFilter(key)} title={label}>
+                <span className="nav-label" title={label}><Icon className="nav-icon" />{label}</span>
                 <span className="nav-count">{counts(key)}</span>
               </div>
             ))}
             <div className="nav-section">{t.sidebar.categories}</div>
             {categoryNav.map(({ key, label, Icon }) => (
-              <div key={key} className={'nav-item' + (filter === key ? ' active' : '')} onClick={() => setFilter(key)}>
-                <span className="nav-label"><Icon className="nav-icon" />{label}</span>
+              <div key={key} className={'nav-item' + (filter === key ? ' active' : '')} onClick={() => setFilter(key)} title={label}>
+                <span className="nav-label" title={label}><Icon className="nav-icon" />{label}</span>
                 <span className="nav-count">{counts(key)}</span>
               </div>
             ))}
@@ -2387,7 +3180,7 @@ export default function App() {
                   title={t.sidebar.queueTooltip(q.running ? t.sidebar.queueRunning : t.sidebar.queueStopped, schedLabel)}
                 >
                   <span className={'queue-dot' + (q.running ? ' running' : '')} />
-                  <span className="nav-label"><FiLayers className="nav-icon" />{q.name}</span>
+                  <span className="nav-label" title={q.name}><FiLayers className="nav-icon" />{q.name}</span>
                   <span className="nav-count">{counts(key)}</span>
                 </div>
               );
@@ -2397,7 +3190,7 @@ export default function App() {
             <div className={'speed-meter' + (totalSpeed > 0 ? ' active' : '')}>
               <div className="speed-meter-icon"><FiArrowDown size={16} /></div>
               <div className="speed-meter-info">
-                <div className="speed-meter-label">{t.sidebar.downloadSpeed}</div>
+                <div className="speed-meter-label" title={t.sidebar.downloadSpeed}>{t.sidebar.downloadSpeed}</div>
                 <div className="speed-meter-value">{fmtSpeed(totalSpeed)}</div>
               </div>
               <span className={'speed-meter-dot' + (totalSpeed > 0 ? ' live' : '')} />
@@ -2408,9 +3201,45 @@ export default function App() {
 
         <div className="main">
           <div className="topbar">
-            <button className="btn btn-primary" onClick={() => { setSavePath(settings.downloadDir || ''); setNewQueueId(''); setUrlError(''); setShowAdd(true); }}><FiPlus className="btn-icon" /> {t.topbar.newDownload}</button>
-            <button className="btn" title={t.topbar.newBatchTitle} onClick={openBatch}><FiLayers className="btn-icon" /> {t.topbar.newBatch}</button>
-            <input className="search" dir="auto" placeholder={t.topbar.searchPlaceholder} value={query} onChange={(e) => setQuery(e.target.value)} />
+            <button className="btn btn-primary" title={`${t.topbar.newDownload} (Ctrl+N)`} onClick={() => { setSavePath(settings.downloadDir || ''); savePathTouchedRef.current = false; setRememberCategoryPath(false); rememberCategoryPathRef.current = false; setNewQueueId(''); setUrlError(''); setShowAdd(true); }}><FiPlus className="btn-icon" /> {t.topbar.newDownload}</button>
+            <button className="btn" title={`${t.topbar.newBatchTitle} (Ctrl+Shift+N)`} onClick={openBatch}><FiLayers className="btn-icon" /> {t.topbar.newBatch}</button>
+            <input
+              ref={searchRef}
+              className="search"
+              dir={query ? 'auto' : dir}
+              placeholder={t.topbar.searchPlaceholder}
+              title={`${t.topbar.searchPlaceholder} (Ctrl+F)`}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.stopPropagation();
+                  if (query) setQuery('');
+                  else (e.target as HTMLInputElement).blur();
+                }
+              }}
+            />
+            <div className="zoom-group" role="group" aria-label={t.zoom.groupLabel}>
+              <button className="zoom-btn" title={t.zoom.zoomOutTitle} aria-label={t.zoom.zoomOut} disabled={zoom <= 0.51} onClick={() => void zoomOut()}><FiZoomOut size={15} /></button>
+              <span
+                className="zoom-pct"
+                title={t.zoom.resetTitle}
+                role="button"
+                tabIndex={0}
+                aria-label={t.zoom.resetLabel(zoomPct)}
+                onClick={() => void resetZoom()}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); void resetZoom(); } }}
+              >{zoomPct}%</span>
+              <button className="zoom-btn" title={t.zoom.zoomInTitle} aria-label={t.zoom.zoomIn} disabled={zoom >= 1.99} onClick={() => void zoomIn()}><FiZoomIn size={15} /></button>
+            </div>
+            <button
+              className="theme-toggle"
+              title={t.shortcuts.title}
+              aria-label={t.shortcuts.title}
+              onClick={() => setShowShortcuts(true)}
+            >
+              <FiHelpCircle size={17} />
+            </button>
             <button
               className="theme-toggle"
               title={resolvedMode === 'dark' ? t.topbar.toLight : t.topbar.toDark}
@@ -2422,8 +3251,8 @@ export default function App() {
           </div>
 
           <div className="toolbar">
-            <button className="btn" disabled={!canResume} title={canResume && selected ? t.toolbar.resumeTitleReady(selected.filename) : t.toolbar.resumeTitleIdle} onClick={handleResumeSelected}><FiPlay className="btn-icon" /> {t.common.resume}</button>
-            <button className="btn" disabled={!canStop} title={canStop && selected ? t.toolbar.stopTitleReady(selected.filename) : t.toolbar.stopTitleIdle} onClick={handleStopSelected}><FiPause className="btn-icon" /> {t.common.stop}</button>
+            <button className="btn" disabled={!canResume} title={selectedItems.length > 1 ? `Resume ${selectedItems.length} selected downloads (Space)` : canResume && selected ? t.toolbar.resumeTitleReady(selected.filename) : t.toolbar.resumeTitleIdle} onClick={handleResumeSelected}><FiPlay className="btn-icon" /> {t.common.resume}{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button>
+            <button className="btn" disabled={!canStop} title={selectedItems.length > 1 ? `Pause ${selectedItems.length} selected downloads (Space / Ctrl+P)` : canStop && selected ? t.toolbar.stopTitleReady(selected.filename) : t.toolbar.stopTitleIdle} onClick={handleStopSelected}><FiPause className="btn-icon" /> {t.common.stop}{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button>
             <button className="btn" disabled={!canStopAll} title={canStopAll ? t.toolbar.stopAllReady : t.toolbar.stopAllIdle} onClick={handleStopAll}><FiSquare className="btn-icon" /> {t.toolbar.stopAll}</button>
             <span className="toolbar-sep" />
             <div className="toolbar-dropdown" ref={queueStartRef}>
@@ -2515,6 +3344,8 @@ export default function App() {
             ref={listRef}
             className="list"
             dir="ltr"
+            style={{ zoom }}
+            onMouseDown={beginListBackgroundDragSelect}
             onDragOver={(e) => { e.preventDefault(); }}
             onDrop={async (e) => {
               e.preventDefault();
@@ -2612,8 +3443,6 @@ export default function App() {
                         e.preventDefault();
                         if (!dragColRef.current || dragColRef.current === col) return;
                         // Position-aware insertion: which physical half of the
-                        // target is the pointer over? The downloads list is
-                        // always LTR, so the right half means "after".
                         const rect = e.currentTarget.getBoundingClientRect();
                         const visualAfter = rect.width > 0 && e.clientX - rect.left > rect.width / 2;
                         const side = visualAfter ? 'right' : 'left';
@@ -2659,7 +3488,7 @@ export default function App() {
                   <div className="details-th details-actions-head" title={t.list.actionsHead} />
                 </div>
                 <div className="details-body">
-                  {paged.map((it) => {
+                  {paged.map((it, rowIdx) => {
                     const completed = it.status === 'completed';
                     const active = it.status === 'downloading' || it.status === 'merging';
                     const lastTry = lastTryOf(it);
@@ -2672,8 +3501,10 @@ export default function App() {
                     return (
                       <div
                         key={it.id}
-                        className={'details-row' + (selectedId === it.id ? ' selected' : '')}
+                        className={'details-row' + (isSelected(it.id) ? ' selected' : '')}
                         style={{ gridTemplateColumns: detailGridTemplate }}
+                        onMouseDown={(e) => beginRowDragSelect(e, rowIdx)}
+                        onMouseEnter={() => hoverRowDragSelect(rowIdx)}
                         onClick={(e) => toggleSelect(e, it.id)}
                         onContextMenu={(e) => openItemCtx(e, it)}
                         onDoubleClick={() => setAnalyticsId(it.id)}
@@ -2751,8 +3582,6 @@ export default function App() {
                           }
                           if (col === 'eta') {
                             // Stabilized long-window ETA; instantaneous only as a
-                            // warm-up fallback before the window fills.
-                            // When paused, freeze the last known value.
                             const isPaused = it.status === 'paused';
                             const liveEta =
                               speedStats.etaSec != null
@@ -2790,11 +3619,11 @@ export default function App() {
                               <button
                                 className="icon-btn details-action danger"
                                 title={t.list.deleteFileTitle}
-                                onClick={() => setPendingRemove({ id: it.id, deleteFile: true })}
+                                onClick={() => setPendingRemove({ ids: [it.id], deleteFile: true })}
                               ><FiTrash2 size={13} /></button>
                             </>
                           ) : (
-                            <button className="icon-btn details-action" title={t.list.removeTitle} onClick={() => setPendingRemove({ id: it.id, deleteFile: false })}><FiX size={13} /></button>
+                            <button className="icon-btn details-action" title={t.list.removeTitle} onClick={() => setPendingRemove({ ids: [it.id], deleteFile: false })}><FiX size={13} /></button>
                           )}
                         </div>
                       </div>
@@ -2803,14 +3632,16 @@ export default function App() {
                 </div>
               </div>
             )}
-            {viewMode === 'cards' && paged.map((it) => {
+            {viewMode === 'cards' && paged.map((it, rowIdx) => {
               const pct = it.totalBytes ? Math.min(100, (it.downloadedBytes / it.totalBytes) * 100) : 0;
               const completed = it.status === 'completed';
               const qNameOf = it.queueId ? queueById(it.queueId)?.name : null;
               return (
                 <div
-                  className={'card download-card' + (selectedId === it.id ? ' selected' : '')}
+                  className={'card download-card' + (isSelected(it.id) ? ' selected' : '')}
                   key={it.id}
+                  onMouseDown={(e) => beginRowDragSelect(e, rowIdx)}
+                  onMouseEnter={() => hoverRowDragSelect(rowIdx)}
                   onClick={(e) => toggleSelect(e, it.id)}
                   onContextMenu={(e) => openItemCtx(e, it)}
                   onDoubleClick={() => setAnalyticsId(it.id)}
@@ -2870,11 +3701,11 @@ export default function App() {
                         <button
                           className="icon-btn danger"
                           title={t.list.deleteFileTitle}
-                          onClick={() => setPendingRemove({ id: it.id, deleteFile: true })}
+                          onClick={() => setPendingRemove({ ids: [it.id], deleteFile: true })}
                         ><FiTrash2 size={15} /></button>
                       </>
                     ) : (
-                      <button className="icon-btn" title={t.list.removeTitle} onClick={() => setPendingRemove({ id: it.id, deleteFile: false })}><FiX size={15} /></button>
+                      <button className="icon-btn" title={t.list.removeTitle} onClick={() => setPendingRemove({ ids: [it.id], deleteFile: false })}><FiX size={15} /></button>
                     )}
                   </div>
                 </div>
@@ -3021,7 +3852,7 @@ export default function App() {
                 onClick={handleRefreshItem}
               ><FiRefreshCw size={14} /> {refreshing ? t.itemMenu.refreshing : t.itemMenu.refresh}</button>
               <button className="ctx-item danger" onClick={handleRemoveItem}>
-                {completed ? <FiTrash2 size={14} /> : <FiX size={14} />} {t.common.remove}
+                {completed ? <FiTrash2 size={14} /> : <FiX size={14} />} {t.common.remove}{selectedIds.length > 1 && selectedIds.includes(it.id) ? ` (${selectedIds.length})` : ''}
               </button>
               <div className="ctx-sep" />
               {inQueue ? (
@@ -3071,7 +3902,7 @@ export default function App() {
               <div className="ctx-sep" />
               <button
                 className="ctx-item"
-                title={t.itemMenu.detailsSpeedTitle}
+                title={`${t.itemMenu.detailsSpeedTitle} (A)`}
                 onClick={() => {
                   setAnalyticsId(it.id);
                   setItemCtx(null);
@@ -3079,6 +3910,7 @@ export default function App() {
               ><FiActivity size={14} /> {t.itemMenu.detailsSpeed}</button>
               <button
                 className="ctx-item"
+                title={`${t.itemMenu.properties} (Enter)`}
                 onClick={() => {
                   setPropsId(it.id);
                   setItemCtx(null);
@@ -3381,9 +4213,17 @@ export default function App() {
             )}
             <label className="form-label">{t.newDownload.saveFolder}</label>
             <div className="save-path-box">
-              <input className="input" dir="ltr" placeholder={t.common.chooseFolder} value={savePath} onChange={(e) => setSavePath(e.target.value)} />
+              <input className="input" dir="ltr" placeholder={t.common.chooseFolder} value={savePath} onChange={(e) => { setSavePath(e.target.value); savePathTouchedRef.current = true; }} />
               <button className="btn" title={t.common.chooseFolderTitle} onClick={() => chooseSaveFolder()}><FiFolder size={16} /></button>
             </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginTop: 14, marginBottom: 14, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={rememberCategoryPath}
+                onChange={(e) => setRememberCategoryPath(e.target.checked)}
+              />
+              {t.newDownload.rememberPath(currentCategoryLabel)}
+            </label>
             {(isVideoPageUrl(newUrl) || (forceVideo && videoResolved)) && !videoDetectFailed ? (
               <div className="queue-note">{t.newDownload.videoQueueNote}</div>
             ) : (
@@ -3408,6 +4248,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {showBrowser && !showAdd && renderBrowserDialog(false)}
 
       {showBatch && batchStep === 1 && (
         <div className="modal-overlay" onClick={closeBatch}>
@@ -3564,7 +4406,7 @@ export default function App() {
                 }}
               ><FiFolder size={16} /></button>
             </div>
-            <label className="form-label">{t.batch.connsPerFile}</label>
+            <label className="form-label batch-conns-label">{t.batch.connsPerFile}</label>
             <select className="input select-single" value={batchConns} onChange={(e) => setBatchConns(Number(e.target.value))}>
               {CONNECTION_OPTIONS.map((n) => <option key={n} value={n}>{t.common.connections(n)}</option>)}
             </select>
@@ -3646,78 +4488,7 @@ export default function App() {
         </div>
       )}
 
-      {pendingFormatConfirm && (
-        <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => setPendingFormatConfirm(null)}>
-          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiFileText className="inline-icon" /> {t.formatConfirm.title}</h2>
-            <p>
-              {t.formatConfirm.pointsTo} {pendingFormatConfirm.detExt ? <>{t.formatConfirm.aFile(pendingFormatConfirm.detExt)}</> : t.formatConfirm.noExt}{' '}
-              (<b style={{ wordBreak: 'break-all' }}>{pendingFormatConfirm.detectedName}</b>), {t.formatConfirm.butNamed}{' '}
-              <b style={{ wordBreak: 'break-all' }}>{pendingFormatConfirm.finalName}</b>
-              {pendingFormatConfirm.finalExt ? '' : ` ${t.formatConfirm.noExtSuffix}`}. {t.formatConfirm.body}
-            </p>
-            <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" autoFocus disabled={adding} onClick={confirmFormatAnyway}>{adding ? t.newDownload.starting : t.formatConfirm.anyway}</button>
-              <button className="btn" disabled={adding} onClick={useOriginalFilename}>{t.formatConfirm.useOriginal}</button>
-              <button className="btn" disabled={adding} onClick={() => setPendingFormatConfirm(null)}>{t.common.cancel}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {pendingCollision && (
-        <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => setPendingCollision(null)}>
-          <div className="modal" style={{ width: 460 }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="modal-title"><FiFileText className="inline-icon" /> {t.collision.title}</h2>
-            <p>
-              <b style={{ wordBreak: 'break-all' }}>{pendingCollision.filename}</b> {t.collision.bodyA}{' '}
-              <b style={{ wordBreak: 'break-all' }} dir="ltr">{pendingCollision.dir || settings.downloadDir}</b>.
-              {t.collision.bodyB}
-            </p>
-            <div className="row" style={{ marginTop: 16, flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" autoFocus disabled={adding} onClick={() => resolveCollision('replace')}>{t.collision.replace}</button>
-              <button className="btn" disabled={adding} onClick={() => resolveCollision('rename')}>{t.collision.keepBoth}</button>
-              <button className="btn" disabled={adding} onClick={() => setPendingCollision(null)}>{t.common.cancel}</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showQueueModal && (
-        <div className="modal-overlay" onClick={() => { setShowQueueModal(null); setPendingQueueMove(null); setQueueCreateReturn(null); }}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2><FiPlus className="inline-icon" /> {t.queueModal.createTitle}</h2>
-            <p>{t.queueModal.createDesc}</p>
-            <label style={{ fontSize: 12 }}>{t.queueModal.nameLabel}</label>
-            <input
-              className="input"
-              autoFocus
-              dir="auto"
-              value={qName}
-              onChange={(e) => {
-                setQName(e.target.value);
-                if (e.target.value.trim()) setQNameError('');
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && qName.trim()) saveQueueModal();
-              }}
-              placeholder={t.queueModal.namePlaceholder}
-              style={qNameError ? { borderColor: 'var(--red)' } : undefined}
-            />
-            {qNameError && <div className="form-error">{qNameError}</div>}
-            <div className="row" style={{ marginTop: 14 }}>
-              <button
-                className="btn btn-primary"
-                onClick={saveQueueModal}
-                disabled={!qName.trim()}
-              >
-                {t.queueModal.create}
-              </button>
-              <button className="btn" onClick={() => { setShowQueueModal(null); setPendingQueueMove(null); setQueueCreateReturn(null); }}>{t.common.cancel}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {renderSharedSubDialogs()}
 
       {showScheduler && (
         <QueueScheduler
@@ -3725,6 +4496,7 @@ export default function App() {
           items={items}
           initialQueueId={showScheduler}
           t={t}
+          lang={lang}
           onClose={() => setShowScheduler(null)}
           onCreateQueue={handleCreateQueue}
           onDeleteQueue={handleDeleteQueue}
@@ -4110,6 +4882,8 @@ export default function App() {
 
       {notice && <NoticeDialog message={notice} okLabel={t.common.ok} onClose={() => setNotice(null)} />}
 
+      {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
+
       {pendingDeleteQueue && (
         <div className="modal-overlay" style={{ zIndex: 80 }} onClick={() => setPendingDeleteQueue(null)}>
           <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
@@ -4123,21 +4897,52 @@ export default function App() {
         </div>
       )}
 
-      {pendingRemoveItem && pendingRemove && (
+      {pendingRemove && pendingRemoveItems.length > 0 && (() => {
+        const multi = pendingRemoveItems.length > 1;
+        const totalBytes = pendingRemoveItems.reduce((a, i) => a + (i.totalBytes || i.downloadedBytes || 0), 0);
+        const shown = pendingRemoveItems.slice(0, 8);
+        const rest = pendingRemoveItems.length - shown.length;
+        const title = multi
+          ? (pendingRemove.deleteFile ? `Delete ${pendingRemoveItems.length} downloads?` : `Remove ${pendingRemoveItems.length} downloads?`)
+          : null;
+        const body = multi
+          ? (pendingRemove.deleteFile
+              ? `This will delete ${pendingRemoveItems.length} downloaded files from your disk and remove them from the list. This cannot be undone.`
+              : `These downloads are not complete yet. Removing them will stop the downloads and discard their progress.`)
+          : null;
+        const confirmLabel = multi
+          ? (pendingRemove.deleteFile ? `Delete ${pendingRemoveItems.length} files` : `Remove ${pendingRemoveItems.length} downloads`)
+          : (pendingRemove.deleteFile ? t.removeConfirm.deleteFile : t.removeConfirm.removeDownload);
+        return (
         <div className="modal-overlay" onClick={() => setPendingRemove(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h2 className="modal-title">
               {pendingRemove.deleteFile ? (
-                <><FiTrash2 className="inline-icon" /> {t.removeConfirm.deleteTitle}</>
+                <><FiTrash2 className="inline-icon" /> {multi ? title : t.removeConfirm.deleteTitle}</>
               ) : (
-                <><FiXCircle className="inline-icon" /> {t.removeConfirm.cancelTitle}</>
+                <><FiXCircle className="inline-icon" /> {multi ? title : t.removeConfirm.cancelTitle}</>
               )}
             </h2>
             <p>
-              {pendingRemove.deleteFile
+              {multi ? body : (pendingRemove.deleteFile
                 ? t.removeConfirm.deleteBody
-                : t.removeConfirm.cancelBody}
+                : t.removeConfirm.cancelBody)}
             </p>
+            {multi ? (
+              <div className="complete-list" role="list" style={{ marginBottom: 4 }}>
+                {shown.map((it) => (
+                  <div key={it.id} className="complete-list-item" role="listitem" title={`${it.filename}\n${it.savePath}`}>
+                    <span className="complete-list-icon"><OsFileIcon item={it} /></span>
+                    <span className="complete-list-info">
+                      <span className="complete-list-name">{it.filename}</span>
+                      <span className="complete-list-meta">{fmtBytes(it.totalBytes || it.downloadedBytes)}</span>
+                    </span>
+                  </div>
+                ))}
+                {rest > 0 && <div className="queue-meta">+{rest} more</div>}
+                <div className="queue-meta">Total: {fmtBytes(totalBytes)}</div>
+              </div>
+            ) : pendingRemoveItem && (
             <div className="complete-file">
               <div className="complete-file-icon"><OsFileIcon item={pendingRemoveItem} /></div>
               <div className="complete-file-info">
@@ -4161,21 +4966,28 @@ export default function App() {
                 </div>
               </div>
             </div>
+            )}
             <div className="row" style={{ marginTop: 16 }}>
               <button className="btn btn-primary" autoFocus onClick={() => setPendingRemove(null)}>
                 {pendingRemove.deleteFile ? t.removeConfirm.keepFile : t.removeConfirm.keepDownloading}
               </button>
               <button
                 className="btn btn-danger"
-                onClick={() => {
-                  window.jetro?.remove(pendingRemoveItem.id, pendingRemove.deleteFile);
+                onClick={async () => {
+                  const ids = [...pendingRemove.ids];
+                  const del = pendingRemove.deleteFile;
                   setPendingRemove(null);
+                  setSelectedIds((prev) => prev.filter((id) => !ids.includes(id)));
+                  for (const id of ids) {
+                    try { await window.jetro?.remove(id, del); } catch {}
+                  }
                 }}
-              >{pendingRemove.deleteFile ? t.removeConfirm.deleteFile : t.removeConfirm.removeDownload}</button>
+              >{confirmLabel}</button>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {renameState && (
         <div className="modal-overlay" style={{ zIndex: 60 }} onClick={() => { if (!renaming) setRenameState(null); }}>

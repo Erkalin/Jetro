@@ -1,0 +1,107 @@
+/* Keyboard-shortcut UI: topbar zoom cluster + shortcuts cheat sheet. */
+
+.zoom-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  border-radius: 12px;
+  padding: 2px;
+  box-shadow: var(--icon-shadow);
+}
+
+.zoom-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.zoom-btn:hover {
+  background: var(--surface-solid);
+  color: var(--text);
+}
+
+.zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.zoom-pct {
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 4px 2px;
+  user-select: none;
+}
+
+.zoom-pct:hover {
+  color: var(--text);
+  background: var(--surface-solid);
+}
+
+.shortcuts-modal {
+  width: 480px;
+}
+
+.shortcuts-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.shortcuts-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 12px;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding-inline-end: 4px;
+}
+
+.shortcuts-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border-radius: 10px;
+}
+
+.shortcuts-row:hover {
+  background: var(--surface);
+}
+
+.shortcuts-label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.shortcuts-keys {
+  font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--glass-border);
+  border-bottom-width: 2px;
+  border-radius: 8px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}

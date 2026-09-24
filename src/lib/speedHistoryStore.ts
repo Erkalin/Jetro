@@ -1,27 +1,12 @@
 import type { SpeedSample } from '@/hooks/useSpeedHistory';
 
-/**
- * Cross-restart persistence for the session speed history sampled in
- * useSpeedHistory. Without this, quit → relaunch wipes every download's
- * analytics (average / peak / speed graph) because the hook only held them
- * in memory.
- *
- * On disk the history is a compact strided subset (timestamps stay exact, so
- * pause gaps still render flat) plus the peak. ETA smoothing state is NOT
- * stored — it reconverges within seconds of live sampling.
- *
- * Pure module (no React imports) so the round-trip can be unit-tested in Node.
- */
-
+// Persists strided history + peak to localStorage.
 export const SPEED_HISTORY_KEY = 'jetro-speed-history-v1';
-// Persisted resolution cap per download: full 1Hz samples stay in memory
-// (up to 3h), disk keeps a strided subset covering the same window.
+// Disk keeps a strided subset; memory keeps full 1Hz.
 const SPEED_HISTORY_STORE_CAP = 1500;
 
 interface StoredEntry {
-  /** [t, bps, done] triples — compact for localStorage. */
   s: Array<[number, number, number]>;
-  /** Peak speed seen (B/s). */
   p: number;
 }
 
@@ -80,7 +65,6 @@ export function loadStoredHistory(
       out.set(id, { samples: samples.slice(-Math.max(1, maxSamples)), peak });
     }
   } catch {
-    // Corrupt / unavailable storage: start fresh, never crash the app.
   }
   return out;
 }
@@ -89,7 +73,6 @@ export function saveStoredHistory(
   storage: Pick<Storage, 'setItem'>,
   samples: ReadonlyMap<string, SpeedSample[]>,
   peaks: ReadonlyMap<string, number>,
-  /** Only ids in this set are written — stale ids (removed downloads) die here. */
   aliveIds: ReadonlySet<string>,
 ): void {
   const data: Record<string, StoredEntry> = {};

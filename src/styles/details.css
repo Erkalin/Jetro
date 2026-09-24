@@ -27,10 +27,10 @@
 .details-th {
   position: relative;
   display: flex; align-items: center; justify-content: center;
-  gap: 6px;
-  padding: 9px 10px 9px 12px;
-  font-size: 11.5px; font-weight: 800;
-  letter-spacing: 0.4px;
+  gap: 4px;
+  padding: 7px 8px;
+  font-size: 10.5px; font-weight: 800;
+  letter-spacing: 0.2px;
   text-transform: uppercase;
   text-align: center;
   color: var(--muted);
@@ -89,9 +89,9 @@
   box-shadow: inset 2px 0 0 var(--accent);
 }
 .details-td {
-  display: flex; align-items: center; justify-content: center; gap: 7px;
-  padding: 6px 10px 6px 12px;
-  font-size: 12.5px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
   min-width: 0;
   white-space: nowrap; overflow: hidden;
   color: var(--text);
@@ -103,11 +103,11 @@
   justify-content: center;
   text-align: center;
 }
-.details-name { gap: 8px; }
+.details-name { gap: 6px; }
 .details-row .file-icon {
-  width: 24px; height: 24px; border-radius: 7px; font-size: 13px; flex-shrink: 0;
+  width: 22px; height: 22px; border-radius: 7px; font-size: 12px; flex-shrink: 0;
 }
-.details-row .file-icon img { width: 18px; height: 18px; }
+.details-row .file-icon img { width: 16px; height: 16px; }
 .details-filename {
   flex: 1; min-width: 0;
   font-weight: 700;
@@ -130,7 +130,7 @@
 }
 .details-queue-select:hover { border-color: var(--glass-border); background: var(--surface); }
 .details-queue-select:disabled { opacity: 0.8; }
-.details-actions { gap: 4px; justify-content: center; padding: 6px 4px; overflow: visible; }
-.icon-btn.details-action { width: 26px; height: 26px; border-radius: 8px; font-size: 13px; }
+.details-actions { gap: 2px; justify-content: center; padding: 4px; overflow: visible; }
+.icon-btn.details-action { width: 24px; height: 24px; border-radius: 8px; font-size: 12px; }
 
 /* settings: proxy + tools */

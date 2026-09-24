@@ -44,11 +44,7 @@ const FLAGS: Record<string, string> = {
   gr, hu, cz, ro, br, mx,
 };
 
-/**
- * Small rounded flag image. SVG files are bundled locally (no network,
- * no emoji-font dependency — Windows has no flag-emoji support, so flag
- * emojis render as plain "GB"/"IR" letters there).
- */
+// Bundled SVG flags (Windows has no flag emoji).
 export default function FlagIcon({ country, name }: { country: string; name: string }) {
   const src = FLAGS[country];
   if (!src) return null;

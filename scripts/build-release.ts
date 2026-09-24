@@ -2,20 +2,8 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-// electron-builder names the portable exe "${productName}.exe",
-// so it becomes "Jetro.exe" (no version in the filename).
-//
-// Single ffmpeg-bundled release:
-//   release/ (Jetro.exe + Jetro Setup.exe, ffmpeg always bundled)
-//
-// Usage:
-//   node dist-scripts/scripts/build-release.js [--out-dir=<dir>] [--keep-config] [--dry-run]
-//     [extra electron-builder args...]
-//
-// When --config is passed, electron-builder reads ONLY that file (package.json
-// "build" is ignored), so the temp config below is a complete standalone
-// config cloned from package.json.
-
+// Single ffmpeg-bundled release. Usage:
+// node distscripts/scripts/buildrelease.js [outdir=<dir>] [keepconfig] [dryrun]
 const DEFAULT_OUT = 'release';
 
 function parseArgs(argv: string[]) {
@@ -35,7 +23,6 @@ function parseArgs(argv: string[]) {
       a === '--variant=all' ||
       a.startsWith('--full-out=')
     ) {
-      // Backwards-compat no-ops (single ffmpeg build is now the only output).
       if (a.startsWith('--full-out=')) outDir = a.slice('--full-out='.length) || outDir;
       else console.warn(`[build-release] note: "${a}" is obsolete — there is only one ffmpeg-bundled build now.`);
     } else if (
@@ -53,7 +40,6 @@ function parseArgs(argv: string[]) {
   return { outDir, keepConfig, dryRun, passthrough };
 }
 
-/** Resolve a config-relative file to an absolute path (project-root based). */
 function toAbs(root: string, p: unknown): unknown {
   if (typeof p !== 'string' || !p.trim()) return p;
   if (path.isAbsolute(p)) return p;
@@ -146,13 +132,15 @@ function main() {
     return;
   }
 
-  const localBin = path.join(
-    root, 'node_modules', '.bin',
-    process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder',
-  );
-  const useLocal = fs.existsSync(localBin);
-  const cmd = useLocal ? localBin : 'npx';
-  const cmdBase = useLocal ? [] : ['electron-builder'];
+  const cliJs = path.join(root, 'node_modules', 'electron-builder', 'cli.js');
+  if (!fs.existsSync(cliJs)) {
+    throw new Error(
+      `[build-release] electron-builder CLI not found at ${cliJs}. Run "npm install" first.`,
+    );
+  }
+  // NOTE: run the CLI via node with shell:false (instead of the .cmd shim with
+  // shell:true). Passing an args array together with shell:true triggers Node
+  // DEP0190 ("Passing args to a child process with shell option true...").
 
   const outAbs = path.isAbsolute(outDir) ? outDir : path.join(root, outDir);
   fs.mkdirSync(outAbs, { recursive: true });
@@ -161,9 +149,9 @@ function main() {
   const tmpPath = path.join(root, tmpName);
   fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), 'utf8');
   console.log(`[build-release] ---- building with ffmpeg -> ${outDir} ----`);
-  const r = spawnSync(cmd, [...cmdBase, '--config', tmpPath, ...passthrough], {
+  const r = spawnSync(process.execPath, [cliJs, '--config', tmpPath, ...passthrough], {
     stdio: 'inherit',
-    shell: process.platform === 'win32',
+    shell: false,
   });
   if (!keepConfig) {
     try { fs.unlinkSync(tmpPath); } catch {}

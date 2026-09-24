@@ -52,9 +52,7 @@ declare global {
     abr?: number;
     acodec?: string;
     fps?: number;
-    /** Combined download size estimate (video+audio for merges). 0 = unknown. */
     estimatedBytes?: number;
-    /** True when any component is filesize_approx / bitrate-derived (final may be larger). */
     estimatedApprox?: boolean;
   }
 
@@ -70,7 +68,6 @@ declare global {
     bundled: string | null;
   }
 
-  /** One connection's byte range within a segmented download. */
   interface DownloadSegmentInfo {
     index: number;
     start: number;
@@ -78,23 +75,16 @@ declare global {
     downloaded: number;
   }
 
-  /** Server location for the analytics view (one cached API lookup per IP). */
   interface ServerGeo {
-    /** "Country, City" display label. */
     label: string;
-    /** ISO 3166-1 alpha-2 code (e.g. "DE"), or null when unknown. */
     countryCode: string | null;
   }
 
-  /** Per-connection progress + server info for the analytics view. */
   interface DownloadSegmentsInfo {
     host: string;
     ip: string | null;
-    /** Resolved once per IP via a cached API lookup, or null when unavailable. */
     geo: ServerGeo | null;
-    /** Null when the backend has no segment data (yt-dlp transfer, never started). */
     segments: DownloadSegmentInfo[] | null;
-    /** True while a live segmented-engine runner owns the download. */
     live: boolean;
   }
 }
@@ -142,6 +132,7 @@ interface JetroAPI {
   onCloseRequest?: (cb: () => void) => () => void;
   decideClose?: (opts: { decision: 'minimize' | 'exit' | 'cancel'; remember?: boolean }) => Promise<any>;
   resetAll: () => Promise<{ ok: boolean }>;
+  resizeBrowserDialog?: (height: number) => void;
   openExternal?: (url: string) => Promise<boolean>;
   getVersion?: () => Promise<string>;
   checkUpdate?: () => Promise<{ current: string; latest: string; updateAvailable: boolean; url: string; error?: string }>;

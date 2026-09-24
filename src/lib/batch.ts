@@ -2,7 +2,6 @@ import type { BatchMode } from '@/types';
 import { en } from '@/locale/en';
 import type { AppStrings } from '@/locale/en';
 
-// ---------- New Batch Download helpers (pattern with * → many URLs) ----------
 export const BATCH_MAX_FILES = 200;
 
 function padBatchNum(n: number, size: number): string {

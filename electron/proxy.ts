@@ -14,7 +14,7 @@ export interface ProxySettings {
   proxyPort: number;
   proxyUser: string;
   proxyPass: string;
-  proxyBypass: string; // comma / semicolon / space separated hosts
+  proxyBypass: string;
 }
 
 export type NetworkSettings = ProxySettings;
@@ -60,7 +60,6 @@ function splitBypassList(bypass: string): string[] {
 
 const ALWAYS_DIRECT = new Set(['localhost', '127.0.0.1', '::1']);
 
-/** True when hostname should bypass the proxy (matches suffix / wildcard, case-insensitive). */
 export function shouldBypassHostname(hostname: string, bypass: string): boolean {
   const host = String(hostname || '').trim().toLowerCase().replace(/^\[(.*)\]$/, '$1');
   if (!host) return true;
@@ -70,7 +69,7 @@ export function shouldBypassHostname(hostname: string, bypass: string): boolean 
     if (!r) continue;
     if (r === '*') return true;
     if (r.startsWith('*.')) {
-      const suffix = r.slice(1); // ".example.com"
+      const suffix = r.slice(1);
       if (host.endsWith(suffix) || host === suffix.slice(1)) return true;
       continue;
     }
@@ -87,7 +86,7 @@ export function buildCustomProxyUrl(cfg: Pick<ProxySettings, 'proxyType' | 'prox
   const host = String(cfg.proxyHost || '').trim();
   const port = Number(cfg.proxyPort);
   if (!host || !port || port < 1 || port > 65535) return null;
-  const scheme = cfg.proxyType === 'https' ? 'http' : cfg.proxyType; // https-proxy-agent handles TLS-to-proxy via http:// URL
+  const scheme = cfg.proxyType === 'https' ? 'http' : cfg.proxyType;
   const auth =
     cfg.proxyUser || cfg.proxyPass
       ? `${encodeURIComponent(cfg.proxyUser)}:${encodeURIComponent(cfg.proxyPass)}@`
@@ -96,12 +95,11 @@ export function buildCustomProxyUrl(cfg: Pick<ProxySettings, 'proxyType' | 'prox
 }
 
 interface ParsedSystemProxy {
-  scheme: string; // http | https | socks4 | socks5 | socks
+  scheme: string;
   host: string;
   port: number;
 }
 
-/** Parse Electron/Chromium proxy string ("PROXY h:p; SOCKS5 h:p; DIRECT") → first usable entry. */
 export function parseSystemProxyString(proxyStr: string): ParsedSystemProxy | null {
   const parts = String(proxyStr || '')
     .split(';')
@@ -165,7 +163,6 @@ export interface EffectiveProxy {
   raw?: string;
 }
 
-/** Resolve the concrete proxy URL for one download URL (null = direct). */
 export async function resolveEffectiveProxyUrl(targetUrl: string, cfg: ProxySettings): Promise<EffectiveProxy> {
   let hostname = '';
   try {
@@ -195,7 +192,6 @@ export async function resolveEffectiveProxyUrl(targetUrl: string, cfg: ProxySett
   return { proxyUrl: null, source: 'none' };
 }
 
-/** Build a Node http/https agent for one proxy URL (null = direct, no custom agent). */
 export function buildAgentFor(proxyUrl: string | null, secure: boolean): http.Agent | https.Agent | undefined {
   if (!proxyUrl) return undefined;
   const lower = proxyUrl.toLowerCase();
@@ -208,7 +204,6 @@ export function buildAgentFor(proxyUrl: string | null, secure: boolean): http.Ag
   }
 }
 
-/** Apply proxy to Chromium session so in-app web requests honor it. Best-effort. */
 export async function applySessionProxy(cfg: ProxySettings): Promise<void> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -239,6 +234,5 @@ export async function applySessionProxy(cfg: ProxySettings): Promise<void> {
     const proxyBypassRules = extraBypass || '<local>';
     await ses.setProxy({ proxyRules, proxyBypassRules });
   } catch {
-    // never break startup over proxy
   }
 }

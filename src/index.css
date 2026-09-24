@@ -7,6 +7,7 @@
 @import './styles/topbar.css';
 @import './styles/cards.css';
 @import './styles/modals.css';
+@import './styles/browser-download.css';
 @import './styles/menus.css';
 @import './styles/toolbar.css';
 @import './styles/details.css';
@@ -17,4 +18,5 @@
 @import './styles/scheduler.css';
 @import './styles/analytics.css';
 @import './styles/lang-switch.css';
+@import './styles/shortcuts.css';
 @import './styles/rtl.css';

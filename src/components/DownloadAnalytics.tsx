@@ -32,7 +32,6 @@ export default function DownloadAnalytics({ item, queueName, stats, onClose }: P
   const [segInfo, setSegInfo] = useState<DownloadSegmentsInfo | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Poll per-connection progress while the modal is open.
   useEffect(() => {
     let alive = true;
     const load = async () => {
@@ -41,7 +40,6 @@ export default function DownloadAnalytics({ item, queueName, stats, onClose }: P
         const r = await window.jetro.getSegments(item.id);
         if (alive) setSegInfo(r);
       } catch {
-        // Keep the last snapshot on transient IPC errors.
       }
     };
     load();
@@ -66,15 +64,11 @@ export default function DownloadAnalytics({ item, queueName, stats, onClose }: P
   const hostIp = host ? (segInfo?.ip ? `${host} • ${segInfo.ip}` : host) : '';
   const geo = segInfo?.geo || null;
   const flagCode = geo?.countryCode ? geo.countryCode.toLowerCase() : null;
-  // Flag asset (remote image, same mechanism as the Google Fonts already in use).
   const flagUrl = flagCode ? `https://flagcdn.com/w80/${flagCode}.png` : null;
   const [flagOk, setFlagOk] = useState(true);
-  // Prefer the resolved location; fall back to host • ip while it loads or offline.
   const serverLabel = geo?.label || hostIp || '—';
   const serverTitle = [geo?.label, hostIp].filter(Boolean).join(' — ') || '—';
 
-  // Segment rows: live/paused snapshots from the backend, a full single row
-  // for finished downloads, otherwise an honest "unavailable" note.
   let segments: DownloadSegmentInfo[] | null = segInfo?.segments || null;
   if (!segments && completed && total > 0) {
     segments = [{ index: 0, start: 0, end: total - 1, downloaded: total }];
@@ -83,10 +77,7 @@ export default function DownloadAnalytics({ item, queueName, stats, onClose }: P
     ? segments.reduce((a, s) => a + Math.max(0, Math.min(s.downloaded, s.end - s.start + 1)), 0)
     : 0;
 
-  // Stabilized long-window ETA; instantaneous only as a warm-up fallback.
-  // When paused, freeze the last known value instead of blanking to '—'.
-  // stats.etaSec is retained in useSpeedHistory while inactive (no updates),
-  // so reading it while paused naturally yields the frozen value.
+  // Frozen when paused.
   const isPaused = item.status === 'paused';
   const liveEta =
     stats.etaSec != null ? formatEtaSec(stats.etaSec) : fmtEta(item, stats.avg);

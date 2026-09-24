@@ -2,12 +2,10 @@ import type { QueuePowerAction } from '@/types';
 import { en } from '@/locale/en';
 import type { AppStrings } from '@/locale/en';
 
-// ---------- Queue schedules: strict 24-hour HH:MM ----------
 const TIME_24H_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 export const QUEUE_SCHED_DEFAULT_START = '22:00';
 export const QUEUE_SCHED_DEFAULT_STOP = '07:00';
 
-/** Localized power-action options for dropdowns (labels from the active language). */
 export function queuePowerOptions(p: AppStrings['power'] = en.power): { value: QueuePowerAction; label: string }[] {
   return [
     { value: 'nothing', label: p.nothing },
@@ -27,7 +25,6 @@ export function queuePowerLabel(v: any, p: AppStrings['power'] = en.power): stri
   return queuePowerOptions(p).find((o) => o.value === a)?.label || p.nothing;
 }
 
-/** Normalize user input to HH:MM 24h ("2:5" → "02:05"). Returns '' when invalid. */
 export function normalizeTime24h(v: unknown): string {
   const s = String(v ?? '').trim();
   if (TIME_24H_RE.test(s)) return s;
@@ -42,7 +39,6 @@ export function normalizeTime24h(v: unknown): string {
   return '';
 }
 
-/** Drop the removed global-scheduler keys so old settings files never mark the form dirty. */
 export function stripGlobalScheduler(s: any): any {
   if (!s || typeof s !== 'object') return s;
   const c: any = { ...s };
@@ -52,7 +48,6 @@ export function stripGlobalScheduler(s: any): any {
   return c;
 }
 
-// ---------- Scheduler window helpers ----------
 export const QUEUE_CONCURRENT_MIN = 1;
 export const QUEUE_CONCURRENT_MAX = 10;
 export const QUEUE_CONCURRENT_DEFAULT = 1;
@@ -110,7 +105,6 @@ export function normalizeRetriesPerFile(v: unknown): number | null {
   return n;
 }
 
-/** Sort queue files: explicit queueOrder first, then batch order, then oldest first. */
 export function compareQueueFiles(a: any, b: any): number {
   const ao = Number(a?.queueOrder);
   const bo = Number(b?.queueOrder);

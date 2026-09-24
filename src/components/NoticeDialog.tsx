@@ -1,15 +1,12 @@
 import { FiInfo } from 'react-icons/fi';
 
 interface NoticeDialogProps {
-  /** Body text — follows the UI direction (RTL in RTL languages). */
   message: string;
   okLabel: string;
   onClose: () => void;
 }
 
-// In-app replacement for window.alert(): native popups are titled with the
-// lowercase package name and always render LTR. This one is titled "Jetro"
-// and inherits <html dir>, so the description is RTL in RTL languages.
+// In-app alert, follows UI direction.
 export default function NoticeDialog({ message, okLabel, onClose }: NoticeDialogProps) {
   return (
     <div className="modal-overlay" style={{ zIndex: 80 }} onClick={onClose}>

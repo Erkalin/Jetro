@@ -22,7 +22,6 @@ function PaletteDots({ id, size = 14 }: { id: ThemeId; size?: number }) {
   );
 }
 
-/** Settings → App theme dropdown: each row shows palette dots + name. */
 export default function ThemePicker({ value, onChange, getLabel }: ThemePickerProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -31,7 +30,6 @@ export default function ThemePicker({ value, onChange, getLabel }: ThemePickerPr
   useDismissOnOutsideClick(rootRef, open, () => setOpen(false));
 
   const toggle = () => {
-    // Close any previously open dropdown before showing this one.
     if (!open) notifyDropdownOpened('theme-picker');
     setOpen((o) => !o);
   };

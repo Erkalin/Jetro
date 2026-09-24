@@ -12,7 +12,6 @@ interface LanguagePickerProps {
   label: string;
 }
 
-/** Settings → App language dropdown: flag + native name, EN/FA pinned first. */
 export default function LanguagePicker({ value, onChange, label }: LanguagePickerProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -35,7 +34,6 @@ export default function LanguagePicker({ value, onChange, label }: LanguagePicke
         type="button"
         className="input theme-picker-btn"
         onClick={() => {
-          // Close any previously open dropdown before showing this one.
           if (!open) notifyDropdownOpened('language-picker');
           setOpen((o) => !o);
         }}

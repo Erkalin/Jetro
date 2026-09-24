@@ -7,7 +7,7 @@
 <p><strong>یک دانلود منیجر مدرن و حرفه ای برای ویندوز مجهز به موتور چنداتصاله، باندل شده با ابزار yt-dlp برای دانلود ویدیو و آهنگ از بیشتر از 1000 شبکه اجتماعی.</strong></p>
 
 <p>
-  <a href="package.json"><img src="https://img.shields.io/badge/version-1.2.0-blue?style=for-the-badge" alt="Version" /></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/version-1.3.0-blue?style=for-the-badge" alt="Version" /></a>
   <a href="https://github.com/Erkalin/Jetro/releases"><img src="https://img.shields.io/badge/platform-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Platform" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="License" /></a>
 </p>
@@ -88,6 +88,7 @@
 - افزونه Jetro Resolver برای مرورگرهای کرومیوم (کروم، اج، بریو) و فایرفاکس، واقع در پوشه `extension/`
 - ارسال لینک، تصویر، ویدیو یا صفحه جاری به برنامه از طریق منوی راست‌کلیک
 - باز کردن مستقیم لینک‌های فایل در جترو به‌جای دانلود توسط مرورگر
+- پنجره جداگانه «دانلود از مرورگر» (جدید در نسخه ۱٫۳٫۰): لینک قابل ویرایش با دکمه‌های «شروع دانلود» / «دانلود بعداً» و `+n در صف`
 - ارتباط با برنامه دسکتاپ از طریق پروتکل `jetro://` (پس از یک‌بار اجرای برنامه ثبت می‌شود). راهنمای نصب در [`extension/README.md`](extension/README.md) ارائه شده است.
 
 ### 🌐 پروکسی
@@ -99,6 +100,7 @@
 
 - پوشه پیش‌فرض دانلود، تعداد اتصال‌ها، تعداد دانلودهای همزمان، محدودیت سرعت، رهگیری خودکار حافظه موقت (Clipboard)، نمایش پنجره تکمیل دانلود (`Show download-complete popup`، پیش‌فرض روشن)
 - نمایش آیکون واقعی فایل‌های ویندوز در فهرست، پشتیبانی از سینی سیستم، اجرا هنگام شروع ویندوز (فقط نسخه نصبی) و بررسی به‌روزرسانی
+- ذخیره‌سازی ضدخرابی فهرست، تنظیمات و صف‌ها با نسخه پشتیبان (`.bak`)
 - گزینه «بازنشانی کامل» در بخش تنظیمات: توقف تمامی دانلودها و پاک‌سازی فهرست، صف‌ها، تنظیمات و تاریخچه سرعت (فایل‌های ذخیره‌شده در دیسک حفظ می‌شوند)
 
 ---

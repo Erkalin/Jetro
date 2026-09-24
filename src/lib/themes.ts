@@ -4,15 +4,12 @@ export type ThemeBase = 'light' | 'dark';
 
 export interface ThemeDef {
   id: ThemeId;
-  /** light/dark base — drives color-scheme, native chrome + header toggle grouping. */
   base: ThemeBase;
-  /** 3 representative colors for the picker dots: [background, accent, accent2]. */
   palette: [string, string, string];
-  /** <meta name="theme-color"> + splash background for this theme. */
   themeColor: string;
 }
 
-/** All selectable theme ids (order = picker order). */
+/** Picker order. */
 export const THEME_IDS: ThemeId[] = [
   'jetro',
   'midnight',
@@ -75,7 +72,6 @@ const DEFS: Record<ThemeId, ThemeDef> = {
 
 const ID_SET = new Set<string>(THEME_IDS);
 
-/** Legacy ids from before the brand rename (light->jetro, dark->midnight). */
 const LEGACY_IDS: Record<string, ThemeId> = { light: 'jetro', dark: 'midnight' };
 
 export function normalizeThemeId(v: unknown): ThemeId {
@@ -90,12 +86,10 @@ export function getThemeDef(id: ThemeId): ThemeDef {
   return DEFS[id] ?? DEFS.system;
 }
 
-/** Base mode for an explicit theme id (system itself has no fixed base). */
 export function themeBaseOf(id: ThemeId): ThemeBase {
   return getThemeDef(id).base;
 }
 
-/** Is this theme rendered on a dark background? ('system' excluded — resolve via OS.) */
 export function isDarkThemeId(id: ThemeId): boolean {
   return id !== 'system' && themeBaseOf(id) === 'dark';
 }

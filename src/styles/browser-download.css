@@ -1,0 +1,452 @@
+/* Browser download dialog — IDM-compact single-column form.
+   Dense like IDM's "Download File Info": small fonts, short rows,
+   no cards, no dead space. Theme-safe (var(--*) only), RTL-safe. */
+
+.browser-standalone {
+  /* No forced full height: the window hugs the content via auto-fit, so the
+     page must size to content (a 100vh min-height would Pin the window tall
+     and leave the dead space under the buttons). */
+  min-height: 0;
+  background: var(--bg-gradient, var(--modal-bg));
+  color: var(--text);
+  display: block;
+}
+
+.browser-standalone-empty {
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.bd-waiting-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.bd-waiting-sub {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 400px;
+}
+
+/* ---- Overlay fallback ---- */
+.browser-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+}
+
+/* ---- Card: narrow + dense, fits content ---- */
+.browser-modal {
+  position: relative;
+  width: 620px;
+  max-width: min(94vw, 620px);
+  max-height: calc(100vh - 28px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--modal-bg);
+  border: 1px solid var(--modal-border);
+  border-radius: 14px;
+  padding: 0 14px 12px;
+  box-shadow: var(--modal-shadow);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  color: var(--text);
+  scrollbar-width: thin;
+}
+
+.browser-modal.bare {
+  width: 100%;
+  max-width: none;
+  /* Height is driven by the auto-fit window (content-sized). Cap at the
+     viewport so expanded video/playlist UI scrolls inside instead of
+     pushing the window past the work area. */
+  min-height: 0;
+  max-height: 100vh;
+  overflow-y: auto;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Measured box for the auto-fit height: always exactly content tall. */
+.bd-fit {
+  display: block;
+  min-width: 0;
+}
+
+.browser-modal .bd-accent {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin-inline: -14px;
+  margin-bottom: 10px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent2, var(--accent)) 60%, transparent 100%);
+  opacity: 0.85;
+}
+
+.browser-modal.bare .bd-accent {
+  margin-inline: -14px;
+}
+
+/* ---- Slim header: 34px tile, 13px title, one-line meta ---- */
+.bd-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 10px;
+}
+
+.bd-file-tile {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--accent-soft-bg), transparent 70%), var(--surface);
+  border: 1px solid var(--accent-soft-border);
+  border-radius: 9px;
+  color: var(--accent);
+  box-shadow: var(--icon-shadow);
+}
+
+.bd-file-tile .file-fallback-icon {
+  color: var(--accent);
+}
+
+.bd-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.bd-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.1px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bd-sub {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bd-sub-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.bd-queued {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--sep);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.bd-logo {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  user-select: none;
+  pointer-events: none;
+}
+
+
+
+/* ---- Single-column dense form (IDM rows, no cards) ---- */
+.bd-body {
+  display: block;
+}
+
+.bd-form {
+  min-width: 0;
+}
+
+.bd-section {
+  margin-bottom: 8px;
+}
+
+.bd-section:last-child {
+  margin-bottom: 0;
+}
+
+/* Cleanup: no card chrome anywhere in the compact form */
+.bd-card {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.browser-modal .form-label.bd-label,
+.bd-label {
+  display: block;
+  margin: 0 0 3px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--muted-strong, var(--muted));
+  line-height: 1.35;
+}
+
+/* Dense inputs: ~30px tall like IDM rows */
+.browser-modal .input.bd-input,
+.bd-input {
+  font-size: 12px;
+  padding: 6px 9px;
+  border-radius: 7px;
+  margin-bottom: 0;
+  line-height: 1.4;
+  min-height: 30px;
+}
+
+select.input.bd-input.bd-select,
+.bd-select {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  font-size: 12px;
+  padding: 6px 26px 6px 9px;
+  min-height: 30px;
+}
+
+.bd-url-row,
+.bd-save-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.bd-url-row .input,
+.bd-save-row .input {
+  margin-bottom: 0;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.save-path-box {
+  margin-bottom: 0;
+}
+
+/* Small square action buttons (copy / browse) */
+.bd-icon-btn {
+  flex-shrink: 0;
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: 7px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+}
+
+.bd-icon-btn.is-ok {
+  color: var(--green);
+  border-color: var(--green-soft-border);
+  background: var(--green-soft-bg);
+}
+
+.bd-copied-hint {
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--green);
+}
+
+.bd-video-toggle {
+  margin-top: 6px;
+}
+
+.bd-remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--muted);
+  margin-top: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.bd-remember input[type='checkbox'] {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.bd-remember-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Connections + queue side-by-side like IDM's Category row */
+.bd-opts {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 8px;
+}
+
+.bd-field {
+  min-width: 0;
+}
+
+/* Legacy stacked class kept harmless (video internals may use it) */
+.bd-stack {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 8px;
+}
+
+.bd-stack .input {
+  margin-bottom: 0;
+}
+
+.bd-label-row {
+  display: contents;
+}
+
+.bd-label-icon {
+  display: none;
+}
+
+/* ---- Footer: IDM-like centered small buttons ---- */
+.bd-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--sep);
+  align-items: stretch;
+  justify-content: center;
+}
+
+.bd-btn {
+  flex: 1;
+  max-width: 200px;
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 7px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.bd-btn-primary {
+  font-weight: 800;
+  box-shadow: var(--btn-primary-shadow);
+}
+
+.bd-btn-primary:hover {
+  filter: brightness(1.07);
+}
+
+.bd-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Video internals stay compact too */
+.browser-modal .video-box-desc,
+.browser-modal .video-hint,
+.browser-modal .video-selected,
+.browser-modal .queue-note {
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.bd-video {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--sep);
+}
+
+.browser-modal .video-group-label {
+  font-size: 10.5px;
+  letter-spacing: 0.3px;
+}
+
+.browser-modal .form-error,
+.browser-modal .form-hint {
+  font-size: 11px;
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+@media (max-width: 560px) {
+  .bd-opts,
+  .bd-stack {
+    grid-template-columns: 1fr;
+  }
+  .bd-actions {
+    flex-direction: column;
+  }
+  .bd-btn {
+    max-width: none;
+  }
+  .bd-title,
+  .bd-sub-text,
+  .bd-remember-text {
+    white-space: normal;
+  }
+  .bd-remember-text {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .browser-modal *,
+  .bd-btn {
+    transition: none !important;
+  }
+}

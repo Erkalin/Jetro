@@ -10,7 +10,6 @@ const PAD_R = 12;
 const PAD_T = 12;
 const PAD_B = 22;
 
-/** Round up to a pretty axis ceiling (1 / 2 / 2.5 / 5 × 10^n). */
 function niceCeil(v: number): number {
   if (!(v > 0)) return 1;
   const exp = Math.floor(Math.log10(v));
@@ -27,19 +26,13 @@ interface Pt {
   bps: number;
 }
 
-// Time gap above which two consecutive samples are treated as a pause gap
-// rather than continuous sampling (normal cadence is ~1s).
 const GAP_MS = 2500;
 
-/** Drops, jumps and flats touching zero are drawn as straight lines so
- *  stop/resume edges stay perfectly vertical instead of smoothed curves. */
 function isHardEdge(p1: Pt, p2: Pt): boolean {
   if (p1.bps === 0 || p2.bps === 0) return true;
   return Math.abs(p2.x - p1.x) < 0.01;
 }
 
-/** Smooth subpath for one continuous run (no large time gaps inside).
- *  Zero-touching segments use straight lines, the rest Catmull-Rom. */
 function runSubpath(run: Pt[], minY: number, maxY: number): string {
   const cy = (v: number) => Math.min(maxY, Math.max(minY, v));
   if (run.length === 0) return '';
@@ -62,17 +55,13 @@ function runSubpath(run: Pt[], minY: number, maxY: number): string {
   return d;
 }
 
-/** Join continuous runs into one unbroken line. Pause gaps (either endpoint
- *  at zero) are routed flat along the zero baseline and then straight up —
- *  never a diagonal ramp across the paused time. Active gaps (both endpoints
- *  live, e.g. background throttling) are connected directly. */
+// Flat at zero across pauses, no diagonal ramp.
 function gapAwareLine(runs: Pt[][], minY: number, maxY: number, baseY: number): string {
   if (runs.length === 0) return '';
   let d = runSubpath(runs[0], minY, maxY);
   for (let r = 1; r < runs.length; r++) {
     const prev = runs[r - 1][runs[r - 1].length - 1];
     const next = runs[r][0];
-    // runSubpath starts with "M x y" — drop the M and reconnect with L.
     const tail = runSubpath(runs[r], minY, maxY).slice(1);
     if (prev.bps === 0 || next.bps === 0) {
       if (Math.abs(prev.y - baseY) > 0.01) d += ` L ${prev.x.toFixed(1)} ${baseY.toFixed(1)}`;
@@ -121,8 +110,6 @@ export default function SpeedGraph({ samples, live }: { samples: SpeedSample[]; 
   const [range, setRange] = useState<SpeedRangeId>('5m');
   const rangeLabel = (id: SpeedRangeId) => (id === 'all' ? t.analytics.rangeAll : RANGE_LABELS[id]);
 
-  // Fingerprint the contents so the model still recomputes even if a caller
-  // ever mutates the array in place instead of replacing it.
   const firstT = samples.length ? samples[0].t : 0;
   const lastT = samples.length ? samples[samples.length - 1].t : 0;
   const lastBps = samples.length ? samples[samples.length - 1].bps : 0;
@@ -131,16 +118,11 @@ export default function SpeedGraph({ samples, live }: { samples: SpeedSample[]; 
     if (samples.length < 2) return null;
     const dataT1 = samples[samples.length - 1].t;
     const rangeMs = SPEED_RANGES.find((r) => r.id === range)?.ms ?? null;
-    // Fixed trailing window once the session outgrows it (scrolling); shrinks
-    // to the data while the session is shorter so short downloads still fill
-    // the width instead of hugging the right edge.
     const t0 = rangeMs == null ? samples[0].t : Math.max(samples[0].t, dataT1 - rangeMs);
     const t1 = dataT1;
     const view = rangeMs == null ? samples : samples.filter((s) => s.t >= t0);
     if (view.length < 2) return null;
     const span = Math.max(1, t1 - t0);
-    // Y rescales to the visible window so zooming into a slow stretch stays
-    // readable instead of being flattened by an old spike.
     const peak = view.reduce((a, s) => Math.max(a, s.bps), 0);
     const max = niceCeil(peak * 1.15);
     const plotW = W - PAD_L - PAD_R;
@@ -153,9 +135,7 @@ export default function SpeedGraph({ samples, live }: { samples: SpeedSample[]; 
       t: s.t,
       bps: s.bps,
     }));
-    // Split at pause-sized time gaps so smoothing never bridges across them
-    // (that bridging is what drew the diagonal ramp on resume). Runs stay
-    // joined by one continuous line — flat at zero across pauses.
+    // Split at pause gaps.
     const runs: Pt[][] = [];
     for (const p of pts) {
       const cur = runs[runs.length - 1];

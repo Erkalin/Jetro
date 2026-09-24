@@ -1,20 +1,26 @@
 .toolbar {
-  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  display: flex; gap: 6px; align-items: center; flex-wrap: nowrap;
   position: relative;
   z-index: 30;
   background: var(--glass-strong);
   border: 1px solid var(--glass-border);
-  border-radius: 16px; padding: 10px 14px;
+  border-radius: 16px; padding: 8px 10px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(22px) saturate(1.4);
   -webkit-backdrop-filter: blur(22px) saturate(1.4);
   transition: background-color 0.25s ease, border-color 0.25s ease;
   overflow: visible;
+  min-width: 0;
 }
-/* keep action buttons compact; bar wraps on narrow screens so dropdowns can overflow outside */
-.toolbar .btn { height: 36px; padding-top: 0; padding-bottom: 0; padding-left: 12px; padding-right: 12px; font-size: 12.5px; white-space: nowrap; flex-shrink: 0; }
-.toolbar-sep { width: 1px; align-self: stretch; background: var(--glass-border); margin: 2px 4px; flex-shrink: 0; }
-.toolbar-dropdown { position: relative; flex-shrink: 0; }
+/* Compact single-line bar: smaller text/icons so long translations
+   (RU "Запустить очередь" / "Остановить очередь") fit without wrapping.
+   Buttons may still shrink with ellipsis on very narrow windows;
+   full label stays in title tooltip. */
+.toolbar .btn { height: 34px; padding-top: 0; padding-bottom: 0; padding-left: 10px; padding-right: 10px; font-size: 12px; gap: 6px; white-space: nowrap; flex-shrink: 1; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.toolbar .btn-icon { width: 13px; height: 13px; }
+.toolbar-sep { width: 1px; align-self: stretch; height: auto; min-height: 22px; background: var(--glass-border); margin: 2px 3px; flex-shrink: 0; }
+.toolbar-dropdown { position: relative; display: flex; flex-shrink: 1; min-width: 0; }
+.toolbar-dropdown .btn { flex: 1 1 auto; min-width: 0; max-width: 100%; }
 .dropdown-backdrop { position: fixed; inset: 0; z-index: 40; }
 .dropdown-menu {
   position: absolute; top: calc(100% + 8px); left: 0; z-index: 41;
@@ -40,23 +46,25 @@ html[dir='rtl'] .dropdown-menu {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .toolbar-spacer { flex: 1; }
-/* right-hand display options stay together on one line */
+/* right-hand display options stay together on one line, pinned to the
+   inline-end in both directions (physical margin-left would stick them to
+   the inline-start in RTL) */
 .toolbar-right {
   display: flex; align-items: center; gap: 8px;
-  margin-left: auto; flex-shrink: 0;
+  margin-inline-start: auto; flex-shrink: 0;
 }
 /* card/details view toggle */
 .view-toggle {
   display: flex; gap: 4px;
-  box-sizing: border-box; height: 36px;
+  box-sizing: border-box; height: 34px;
   background: var(--hover-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 12px;
+  border-radius: 11px;
   padding: 2px;
   flex-shrink: 0;
 }
 .view-toggle-btn {
-  width: 32px; height: 30px;
+  width: 30px; height: 28px;
   display: inline-flex; align-items: center; justify-content: center;
   border: 1px solid transparent; border-radius: 9px;
   background: transparent; color: var(--muted);
@@ -78,14 +86,14 @@ html[dir='rtl'] .dropdown-menu {
 /* per-page dropdown — styled like a toolbar button so it sits flush */
 select.input.page-size-select {
   appearance: none; -webkit-appearance: none;
-  box-sizing: border-box; height: 36px; width: auto; min-width: 76px;
-  padding: 0 28px 0 12px;
+  box-sizing: border-box; height: 34px; width: auto; min-width: 70px;
+  padding: 0 24px 0 10px;
   background-color: var(--surface);
   border: 1px solid var(--glass-border);
-  border-radius: 12px;
+  border-radius: 11px;
   color: var(--text);
   font-family: var(--font-main);
-  font-size: 12.5px; font-weight: 700; line-height: 1;
+  font-size: 12px; font-weight: 700; line-height: 1;
   margin-bottom: 0; flex-shrink: 0;
   text-align: center; text-align-last: center;
   cursor: pointer;

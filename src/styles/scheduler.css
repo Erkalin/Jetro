@@ -327,6 +327,23 @@
   padding: 14px;
   box-shadow: var(--icon-shadow);
 }
+/* Dark-mode themes: deepen card backgrounds a touch so they stand apart
+   from the backdrop (light themes keep the default --surface). */
+[data-theme="midnight"] .sched-card,
+[data-theme="gray"] .sched-card,
+[data-theme="crimson"] .sched-card,
+[data-theme="teal"] .sched-card,
+[data-theme="navy"] .sched-card,
+[data-theme="indigo"] .sched-card,
+[data-theme="nord"] .sched-card,
+[data-theme="dracula"] .sched-card,
+[data-theme="forest"] .sched-card,
+[data-theme="espresso"] .sched-card,
+[data-theme="ember"] .sched-card,
+[data-theme="ruby"] .sched-card,
+[data-theme="hunter"] .sched-card {
+  background: color-mix(in srgb, var(--surface) 80%, black);
+}
 .sched-card-head {
   display: flex;
   align-items: flex-start;
@@ -649,6 +666,11 @@ button.sched-stop-toggle:focus-visible,
 .sched-chip.is-off {
   opacity: 0.5;
   cursor: not-allowed;
+}
+/* Country-specific weekend days (Fri–Sat, Fri-only, Sun-only, …) get a dashed
+   outline so they read as weekend without changing theme colors. */
+.sched-chip.is-weekend {
+  border-style: dashed;
 }
 .sched-chip-input {
   position: absolute;

@@ -38,48 +38,38 @@ import {
 } from '@/lib/schedule';
 import { en } from '@/locale/en';
 import type { AppStrings } from '@/locale/en';
+import {
+  normalizeLanguage,
+  orderedWeekdayIndices,
+  weekendFor,
+} from '@/locale/languages';
+import type { Language } from '@/locale/languages';
 
 type Strings = AppStrings;
-const enSched = en.scheduler;
 
-/** Active-locale scheduler strings with English fallback (no locale-file churn). */
 function schedStrings(t: Strings): AppStrings['scheduler'] {
-  try {
-    const s = (t as any)?.scheduler;
-    if (s && typeof s === 'object' && s.title) return s;
-  } catch {}
-  return enSched;
+  return t?.scheduler ?? en.scheduler;
 }
 
-/**
- * Section headings / microcopy introduced by the redesign.
- * Read from the locale when present, otherwise English — so the 30+
- * existing locale files keep compiling untouched.
- */
 function extraCopy(s: AppStrings['scheduler']) {
-  const e: any = enSched as any;
-  const o: any = s as any;
+  const e = en.scheduler;
   return {
-    generalTitle: o?.generalTitle || e?.generalTitle || 'General',
-    generalSub: o?.generalSub || e?.generalSub || 'Name this queue and choose startup behavior.',
-    timingTitle: o?.timingTitle || e?.timingTitle || 'Start schedule',
-    timingSub: o?.timingSub || e?.timingSub || 'When should this queue start downloading?',
-    stopTitle: o?.stopTitle || e?.stopTitle || 'Stop schedule',
-    stopSub: o?.stopSub || e?.stopSub || 'Optionally stop the queue at a fixed time.',
-    retryTitle: o?.retryTitle || e?.retryTitle || 'Retries',
-    retrySub: o?.retrySub || e?.retrySub || 'How many times should each failed file be retried?',
-    finishTitle: o?.finishTitle || e?.finishTitle || 'When finished',
-    finishSub: o?.finishSub || e?.finishSub || 'What should happen after every file completes?',
-    filesTitle: o?.filesTitle || e?.filesTitle || 'Files in queue',
-    unsaved: o?.unsaved || e?.unsaved || 'Unsaved changes',
-    savedHint: o?.savedHint || e?.savedHint || 'All changes saved',
-    shortcutHint: o?.shortcutHint || e?.shortcutHint || 'Ctrl+S to apply',
+    generalTitle: s.generalTitle || e.generalTitle,
+    generalSub: s.generalSub || e.generalSub,
+    timingTitle: s.timingTitle || e.timingTitle,
+    timingSub: s.timingSub || e.timingSub,
+    stopTitle: s.stopTitle || e.stopTitle,
+    stopSub: s.stopSub || e.stopSub,
+    retryTitle: s.retryTitle || e.retryTitle,
+    retrySub: s.retrySub || e.retrySub,
+    finishTitle: s.finishTitle || e.finishTitle,
+    finishSub: s.finishSub || e.finishSub,
+    filesTitle: s.filesTitle || e.filesTitle,
+    unsaved: s.unsaved || e.unsaved,
+    savedHint: s.savedHint || e.savedHint,
+    shortcutHint: s.shortcutHint || e.shortcutHint,
   };
 }
-
-// ---------------------------------------------------------------------------
-// Draft model (unchanged behavior — same queue fields as before)
-// ---------------------------------------------------------------------------
 
 export interface SchedulerDraft {
   name: string;
@@ -156,6 +146,7 @@ interface Props {
   items: Item[];
   initialQueueId: string;
   t: Strings;
+  lang?: Language;
   onClose: () => void;
   onCreateQueue: (name: string) => Promise<Queue | null>;
   onDeleteQueue: (q: Queue) => Promise<void>;
@@ -165,10 +156,6 @@ interface Props {
   onStartQueue: (q: Queue) => Promise<void>;
   onStopQueue: (q: Queue) => Promise<void>;
 }
-
-// ---------------------------------------------------------------------------
-// Small presentational building blocks
-// ---------------------------------------------------------------------------
 
 function SwitchRow(props: {
   checked: boolean;
@@ -217,16 +204,21 @@ function Card(props: { icon: React.ReactNode; title: string; sub?: string; child
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main dialog
-// ---------------------------------------------------------------------------
-
 export default function QueueScheduler({
-  queues, items, initialQueueId, t, onClose,
+  queues, items, initialQueueId, t, lang: langProp, onClose,
   onCreateQueue, onDeleteQueue, onSaveQueue, onReorder, onRemoveItem, onStartQueue, onStopQueue,
 }: Props) {
   const s = schedStrings(t);
   const x = extraCopy(s);
+  const lang: Language = normalizeLanguage(langProp);
+  const weekOrder = useMemo(() => orderedWeekdayIndices(lang), [lang]);
+  const weekendSet = useMemo(() => {
+    try {
+      return new Set<number>(weekendFor(lang));
+    } catch {
+      return new Set<number>([0, 6]);
+    }
+  }, [lang]);
   const [selectedId, setSelectedId] = useState<string>(initialQueueId || queues[0]?.id || '');
   const [tab, setTab] = useState<'schedule' | 'files'>('schedule');
   const [drafts, setDrafts] = useState<Record<string, SchedulerDraft>>({});
@@ -237,8 +229,6 @@ export default function QueueScheduler({
   const [newName, setNewName] = useState('');
   const [newError, setNewError] = useState('');
   const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null);
-  // In-app unsaved-changes confirmation (replaces window.confirm so the
-  // title stays "Jetro" and the body follows the UI direction).
   const [showDiscard, setShowDiscard] = useState(false);
 
   const selected: Queue | undefined = useMemo(
@@ -249,8 +239,6 @@ export default function QueueScheduler({
 
   useEscape(!!pendingDelete, () => setPendingDelete(null));
 
-  // Keep selection valid when queues change (create/delete from elsewhere).
-  // Drafts of deleted queues are evicted (deletion is confirmed App-side).
   useEffect(() => {
     if (!queues.length) return;
     if (!queues.some((q) => q.id === selectedId)) {
@@ -265,7 +253,6 @@ export default function QueueScheduler({
     });
   }, [queues, selectedId]);
 
-  // Reset file selection when switching queues.
   useEffect(() => {
     setFileSel(null);
     setErrors('');
@@ -296,7 +283,6 @@ export default function QueueScheduler({
       .sort((a, b) => compareQueueFiles(a as any, b as any));
   }, [items, selId]);
 
-  /** Per-queue file counts for the sidebar badges (no search — direct map). */
   const fileCounts = useMemo(() => {
     const m = new Map<string, number>();
     for (const i of items) {
@@ -315,7 +301,6 @@ export default function QueueScheduler({
     return '';
   };
 
-  /** Live per-field errors for inline highlighting (same rules as validate). */
   const fieldErrors = useMemo(() => {
     if (!draft) return { name: '', start: '', stop: '', date: '' };
     return {
@@ -339,7 +324,6 @@ export default function QueueScheduler({
     setSaving(true);
     try {
       const patch = draftToPatch(cur);
-      // Normalize times through the shared helper so "2:5" becomes "02:05".
       patch.scheduleStart = normalizeTime24h(cur.startTime) || QUEUE_SCHED_DEFAULT_START;
       patch.scheduleStop = normalizeTime24h(cur.stopTime) || QUEUE_SCHED_DEFAULT_STOP;
       await onSaveQueue(selected.id, patch);
@@ -373,7 +357,6 @@ export default function QueueScheduler({
   const handleStop = async () => {
     if (!selected) return;
     try {
-      // Save schedule edits first so Stop applies to the latest window.
       if (isDirty) await saveDraft();
       await onStopQueue(selected);
     } catch {}
@@ -395,12 +378,10 @@ export default function QueueScheduler({
     onClose();
   };
   useEscape(true, () => {
-    // Delete confirm consumes Escape first (handled above via pendingDelete hook too).
     if (pendingDelete) return;
     handleClose();
   });
 
-  // Ctrl/Cmd+S applies without closing — standard for settings-style dialogs.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
@@ -440,8 +421,6 @@ export default function QueueScheduler({
 
   const handleDelete = async () => {
     if (!selected) return;
-    // Opens the App-level delete confirmation; drafts are evicted by the
-    // queues-change effect once the deletion actually lands.
     try {
       await onDeleteQueue(selected);
     } catch {}
@@ -502,7 +481,7 @@ export default function QueueScheduler({
     );
   }
 
-  const wd = s.weekdays && s.weekdays.length === 7 ? s.weekdays : enSched.weekdays;
+  const wd = s.weekdays && s.weekdays.length === 7 ? s.weekdays : en.scheduler.weekdays;
   const running = !!selected.running;
   const selCount = fileCounts.get(selId) || 0;
 
@@ -723,21 +702,25 @@ export default function QueueScheduler({
                       </div>
                     ) : (
                       <div className="sched-chips" role="group" aria-label={s.daily}>
-                        {wd.map((label, i) => {
-                          const on = !!draft.weekdays[i];
+                        {weekOrder.map((dayIdx) => {
+                          const label = wd[dayIdx] ?? wd[(dayIdx as number) % 7];
+                          const on = !!draft.weekdays[dayIdx];
+                          const isWeekend = weekendSet.has(dayIdx as number);
                           return (
                             <label
-                              key={i}
-                              className={'sched-chip' + (on ? ' on' : '') + (!draft.startAtEnabled ? ' is-off' : '')}
+                              key={dayIdx}
+                              title={label}
+                              className={'sched-chip' + (on ? ' on' : '') + (!draft.startAtEnabled ? ' is-off' : '') + (isWeekend ? ' is-weekend' : '')}
                             >
                               <input
                                 type="checkbox"
                                 className="sched-chip-input"
                                 checked={on}
                                 disabled={!draft.startAtEnabled}
+                                aria-label={label}
                                 onChange={(e) => {
                                   const next = [...draft.weekdays];
-                                  next[i] = e.target.checked;
+                                  next[dayIdx as number] = e.target.checked;
                                   setDraft({ weekdays: next });
                                 }}
                               />

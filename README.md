@@ -8,7 +8,7 @@ engine, bundled with yt-dlp for video and audio downloads from <big>1000+</big> 
 <p><a href="README-fa.md">برای خواندن مستندات فارسی کلیک کنید</a></p>
 
 <p>
-<a href="package.json"><img src="https://img.shields.io/badge/version-1.2.0-blue?style=for-the-badge" alt="Version" /></a>
+<a href="package.json"><img src="https://img.shields.io/badge/version-1.3.0-blue?style=for-the-badge" alt="Version" /></a>
   <a href="https://github.com/Erkalin/Jetro/releases"><img src="https://img.shields.io/badge/platform-Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Platform" /></a>
   <a href="https://www.electronjs.org/"><img src="https://img.shields.io/badge/Electron-33-47848F?style=for-the-badge&logo=electron&logoColor=white" alt="Electron" /></a>
   <a href="https://react.dev/"><img src="https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black" alt="React" /></a>
@@ -96,14 +96,16 @@ Twitch, Facebook, X/Twitter and
 
 
 > 🔴 English and Persian are human-translated; the other 38 languages are AI-translated — please report mistakes via [Issues](https://github.com/Erkalin/Jetro/issues)
-### 🧩 Browser extension (new in v1.0.0)
+### 🧩 Browser extension (new in v1.0.0, dialog in v1.3.0)
 
 Jetro Resolver is located in `extension/` — a Chromium MV3 extension (Chrome,
 Edge, Brave, Opera, Vivaldi, with Firefox compatibility). Send any link,
 image, video, or page to Jetro via the context menu, or click a direct file
 link to open it in the application instead of the browser. Communication with
 the desktop application is handled via the `jetro://add?url=...` protocol
-(registered on first run). See
+(registered on first run). Links from the browser now open in a separate
+`Download from browser` dialog with `Start download` / `Download later` and
+`+n queued` stacking. See
 [`extension/README.md`](extension/README.md) for installation instructions.
 
 ### 🌐 Network & Privacy

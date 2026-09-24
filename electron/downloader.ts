@@ -20,13 +20,9 @@ export interface ProbeResult {
 }
 
 const UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jetro/1.2.0 segmented downloader';
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Jetro/1.3.0 segmented downloader';
 
-/**
- * Ensure a file's parent folder exists. A bare Windows drive ("C:") is
- * drive-relative and mkdir('C:') fails — expand to the drive root ("C:\").
- * Throws a user-facing error (shown on the item) instead of raw mkdir text.
- */
+// Ensure parent dir exists, user-facing error.
 async function ensureParentDir(filePath: string): Promise<void> {
   let dir = path.dirname(filePath);
   if (/^[a-zA-Z]:$/.test(dir)) dir += path.sep;
@@ -96,13 +92,7 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/**
- * Smooth a raw 100ms-window speed sample so the UI ramps instead of snapping.
- * Fast attack on the way up, slow release on the way down: a single empty
- * window (throttle sleep, retry pause, tail segment) decays the displayed
- * speed instead of zeroing it, so ETA doesn't flicker to "—". Snaps to 0
- * only after a sustained stall drives the value into the noise floor.
- */
+// Smooth speed: fast up, slow down.
 export function smoothSpeedBps(prev: number, instant: number): number {
   const p = Math.max(0, Math.round(Number(prev) || 0));
   const ins = Math.max(0, Math.round(Number(instant) || 0));
@@ -127,9 +117,7 @@ const RETRYABLE_CODES = new Set([
   'ENOTCONN',
 ]);
 
-/** Server answered 200 to a Range request: retrying the range is pointless, fall back. */
 const RANGE_UNSUPPORTED_CODE = 'RANGE_UNSUPPORTED';
-/** A response ended before its segment was complete: the remainder must be re-requested. */
 const INCOMPLETE_CODE = 'INCOMPLETE_SEGMENT';
 
 function isRangeUnsupportedError(e: any): boolean {
@@ -147,7 +135,6 @@ function incompleteError(): Error {
   return Object.assign(new Error('socket hang up'), { code: INCOMPLETE_CODE });
 }
 
-/** The server's Content-Range total disagrees with the probe: adopt it, don't force it. */
 const SIZE_CHANGED_CODE = 'SIZE_CHANGED';
 
 function sizeChangedError(total: number): Error {
@@ -157,20 +144,12 @@ function sizeChangedError(total: number): Error {
   });
 }
 
-/** Transient failures worth retrying automatically instead of surfacing as an error. */
 function isRetryableError(e: any): boolean {
   if (!e) return false;
   const code = String((e as any)?.code || '');
-  // Never retry: the server doesn't honor ranges (caller falls back instead).
   if (code === RANGE_UNSUPPORTED_CODE) return false;
-  // Size changes are handled by the driver (adopt + re-drive), not retried here.
   if (code === SIZE_CHANGED_CODE) return false;
-  // A truncated segment is always worth re-requesting.
   if (code === INCOMPLETE_CODE) return true;
-  // NOTE: no message sniffing for 'aborted' here. Node reports a server-side
-  // connection kill as ECONNRESET with message 'aborted' — that is a network
-  // failure, not a user pause. Genuine pauses are detected via this.aborted
-  // in the retry loops before this function is ever consulted.
   if (RETRYABLE_CODES.has(code)) return true;
   const msg = String(e?.message || e).toLowerCase();
   if (msg.includes('socket hang up') || msg.includes('socket hung up') || msg.includes('hang up')) return true;
@@ -184,7 +163,6 @@ function isRetryableError(e: any): boolean {
   return false;
 }
 
-/** Exponential backoff with jitter: ~400ms, 800ms, 1.6s, 3.2s, … capped at 8s. */
 function retryDelayMs(attempt: number): number {
   return Math.min(8000, 400 * 2 ** attempt) + Math.floor(Math.random() * 250);
 }
@@ -248,10 +226,7 @@ function requestOnce(
 }
 
 export async function probeUrl(urlStr: string, proxyOpts?: ProxyOptions): Promise<ProbeResult> {
-  // Authoritative size first: GET bytes=0-0. A 206's Content-Range total is
-  // the server's own statement of the transfer size; HEAD Content-Length is
-  // only a hint (servers often report a different length for HEAD than for
-  // the GET that follows, which used to show up as "227 KB / 176 KB").
+  // Prefer GET bytes=0-0 total over HEAD length.
   try {
     const { res, url } = await requestOnce(urlStr, { Range: 'bytes=0-0' }, 'GET', proxyOpts);
     const range = ((res.headers['content-range'] as string) || '').trim();
@@ -268,8 +243,6 @@ export async function probeUrl(urlStr: string, proxyOpts?: ProxyOptions): Promis
       };
     }
     if (res.statusCode === 206) {
-      // 206 without a usable total (e.g. "bytes 0-0/*"): ranges work, but the
-      // size must come from HEAD below.
       res.resume();
       const head = await headProbe(url, proxyOpts).catch(() => null);
       return {
@@ -279,8 +252,7 @@ export async function probeUrl(urlStr: string, proxyOpts?: ProxyOptions): Promis
         contentType: type,
       };
     }
-    // 200 (or anything else): the server ignores ranges. Destroy — don't
-    // resume — so we don't stream a potentially huge body just to probe it.
+    // Server ignores ranges: destroy probe body, fall back to HEAD.
     try {
       res.destroy();
     } catch {}
@@ -295,13 +267,11 @@ export async function probeUrl(urlStr: string, proxyOpts?: ProxyOptions): Promis
       contentType: type,
     };
   } catch {
-    // Range request itself failed (blocked method, network blip, …): HEAD.
     const head = await headProbe(urlStr, proxyOpts);
     return head;
   }
 }
 
-/** HEAD probe: size hint + metadata. Never trusted over a Content-Range total. */
 async function headProbe(urlStr: string, proxyOpts?: ProxyOptions): Promise<ProbeResult> {
   const { res, url } = await requestOnce(urlStr, {}, 'HEAD', proxyOpts);
   const len = Number(res.headers['content-length'] || 0);
@@ -315,7 +285,6 @@ async function headProbe(urlStr: string, proxyOpts?: ProxyOptions): Promise<Prob
   };
 }
 
-/** Authoritative total for the transfer behind one response, or 0 if unknown. */
 function totalFromHeaders(res: http.IncomingMessage, rangeStart: number): number {
   const cr = res.headers['content-range'];
   if (typeof cr === 'string') {
@@ -357,39 +326,19 @@ export class SegmentedDownload {
   private bytesSinceTick = 0;
   speedBps = 0;
   speedLimitBps = 0; // 0 = unlimited
-  /**
-   * Global token bucket shared by every connection of every download.
-   * The README promises a *global* limiter: N parallel Range connections
-   * (and M concurrent downloads) must add up to `speedLimitBps` in total,
-   * not `N * M * speedLimitBps`. All throttle() calls reserve bytes from
-   * this one bucket under a promise-chain mutex, so the long-term average
-   * across the whole app converges to the limit.
-   */
+  // Shared global token bucket.
   private static bucketTokens = 0;
   private static bucketLastMs = 0;
   private static bucketInit = false;
   private static bucketChain: Promise<void> = Promise.resolve();
   statePath: string;
   proxyOpts?: ProxyOptions;
-  /** In-flight requests, so pause() can fail them fast instead of leaking. */
   private activeReqs = new Set<any>();
-  /** Agents owned by this run — fresh sockets, never reused from a previous run. */
   private runAgents = new Map<string, http.Agent | https.Agent>();
-  /**
-   * Generation counter: bumped on every run() and before the single-connection
-   * fallback. Lets stale segment attempts from a superseded phase fail fast
-   * instead of writing into (or re-saving state for) the new phase.
-   */
   private runId = 0;
 
   onProgress: ProgressCb = () => {};
-  /** Serializes saveState() writes so they can't tear the resume file. */
   private saveQueue: Promise<void> = Promise.resolve();
-  /**
-   * Probe result from an earlier call (e.g. the add-dialog probe). Used instead
-   * of probing a second time when there is no resume state — two probes of a
-   * dynamic URL can disagree, which used to show different totals per attempt.
-   */
   seedProbe?: ProbeResult;
 
   constructor(url: string, filePath: string, numConnections = 8, speedLimitBps = 0, proxyOpts?: ProxyOptions) {
@@ -405,7 +354,6 @@ export class SegmentedDownload {
     this.proxyOpts = proxyOpts;
   }
 
-  /** Live-update the limiter without restarting the download. */
   setSpeedLimitBps(bps: number) {
     this.speedLimitBps = Math.max(0, Math.round(Number(bps) || 0));
   }
@@ -430,9 +378,6 @@ export class SegmentedDownload {
     this.saveQueue = new Promise<void>((r) => {
       release = r;
     });
-    // Serialize writes: the progress tick saves every ~500ms and must never
-    // interleave two writes into a torn resume file (which would discard all
-    // progress on the next resume).
     try {
       await prev;
     } catch {}
@@ -461,9 +406,6 @@ export class SegmentedDownload {
     this.paused = true;
     this.aborted = true;
     // Fail fast: error-out every in-flight request so run() settles immediately
-    // and the runner can be dropped. Destroying WITH an error guarantees the
-    // pending promises reject — a bare destroy() can leave them hanging forever
-    // (no 'end'/'error'), leaking the runner and blocking the next resume.
     for (const req of this.activeReqs) {
       try {
         req.destroy(new Error('aborted'));
@@ -472,12 +414,7 @@ export class SegmentedDownload {
     this.activeReqs.clear();
   }
 
-  /**
-   * Per-run agents: resume must never reuse keep-alive sockets pooled by a
-   * previous run — the server has typically closed those while we were paused,
-   * so the first request on each dead socket fails with "socket hang up".
-   * Fresh agents per run + destroy at the end eliminates that entirely.
-   */
+  // Per-run agents: resume must never reuse keep-alive sockets pooled by a
   private async agentForRun(targetUrl: string): Promise<http.Agent | https.Agent | undefined> {
     let proxyUrl: string | null | undefined;
     if (this.proxyOpts?.getProxyUrl) {
@@ -536,8 +473,6 @@ export class SegmentedDownload {
     const need = Math.min(Math.floor(n), 1 << 30);
     if (need <= 0) return;
     // Atomically reserve `need` bytes from the shared bucket. The wait is
-    // slept *after* releasing the mutex so concurrent connections queue up
-    // future slots instead of all sleeping the same window and bursting.
     let waitMs = 0;
     const prev = SegmentedDownload.bucketChain;
     let release!: () => void;
@@ -628,21 +563,12 @@ export class SegmentedDownload {
             }
             if (res.statusCode === 200) {
               // We always send a Range header here: 200 means the server
-              // ignored it and is streaming the whole file. Writing that into
-              // one segment's slice would re-download the file N times and
-              // corrupt it — bail out so run() can fall back to 1 connection.
-              // Destroy (don't resume): the data handler below must never see
-              // a single byte of this body.
               try {
                 req.destroy();
               } catch {}
               return reject(rangeUnsupportedError());
             }
             // When the server tells us which range it sent, make sure it is
-            // the one we asked for instead of silently writing wrong bytes.
-            // A disagreeing total means the file changed size since the probe:
-            // adopt it (handled by the driver) instead of downloading a
-            // wrong amount — never more, never less.
             const contentRange = res.headers['content-range'];
             if (typeof contentRange === 'string') {
               const cm = /bytes (\d+)-\d+\/(\d+|\*)/.exec(contentRange.trim());
@@ -693,8 +619,6 @@ export class SegmentedDownload {
               res.pause();
               try {
                 // Write position must be derived from live progress: `from`
-                // already contains the progress made before this attempt, so
-                // `from + seg.downloaded` would double-count it on retries.
                 const pos = seg.start + seg.downloaded;
                 const remaining = seg.end - pos + 1;
                 if (remaining <= 0) {
@@ -741,9 +665,6 @@ export class SegmentedDownload {
             res.on('end', win);
             res.on('error', fail);
             // Server closed the connection without finishing (the classic
-            // post-pause "socket hang up"): fail fast so the retry loop can
-            // open a fresh socket instead of hanging forever. res.complete
-            // guards the benign close that follows a fully received message.
             res.on('close', () => {
               if (!done && !res.complete) fail(this.aborted ? new Error('aborted') : new Error('socket hang up'));
             });
@@ -758,8 +679,6 @@ export class SegmentedDownload {
       attempt(this.url, 0).catch(reject);
     });
     // Retry transient failures (stale pooled socket closed while paused,
-    // server throttling the reconnect burst, …) so one bad attempt doesn't
-    // fail the whole download and force a manual resume.
     if (seg.index > 0) await sleep(Math.min(seg.index * 40, 600));
     let lastErr: any = null;
     for (let a = 0; a < 5; a++) {
@@ -769,8 +688,6 @@ export class SegmentedDownload {
       try {
         await once();
         // A clean 'end' doesn't prove we got every byte (a truncated 206
-        // still ends cleanly): only stop when the segment is actually full,
-        // otherwise re-request the remainder instead of leaving a hole.
         if (seg.start + seg.downloaded > seg.end) return;
         throw incompleteError();
       } catch (e) {
@@ -829,12 +746,6 @@ export class SegmentedDownload {
               return reject(new Error('HTTP ' + res.statusCode));
             }
             // Trust this transfer's own headers over the earlier probe: if the
-            // file changed size between probing and downloading, the progress
-            // display (and completion check) must follow reality, not the
-            // stale probe — this is what used to show "227 KB / 176 KB".
-            // Only authoritative statements (a full 200 body, or an explicit
-            // Content-Range total) may shrink the target: a short 206 without
-            // Content-Range is just a guess and must only ever grow it.
             const transferTotal = totalFromHeaders(res, start);
             if (transferTotal > 0) {
               const authoritative =
@@ -873,9 +784,6 @@ export class SegmentedDownload {
             ws.on('error', fail);
             res.on('error', fail);
             // Server closed the connection without finishing: fail fast so the
-            // retry loop can open a fresh socket instead of hanging forever.
-            // res.complete guards the benign close that follows a fully
-            // received message (it can fire before ws 'finish' flushes).
             res.on('close', () => {
               if (!done && !res.complete) fail(this.aborted ? new Error('aborted') : new Error('socket hang up'));
             });
@@ -896,8 +804,6 @@ export class SegmentedDownload {
       try {
         await once();
         // A clean stream end doesn't prove the whole file arrived (a
-        // truncated response still ends cleanly): when the size is known,
-        // only stop once it is on disk, otherwise resume the remainder.
         if (this.totalBytes > 0) {
           let size = 0;
           try {
@@ -969,12 +875,7 @@ export class SegmentedDownload {
     await this.driveSegments();
   }
 
-  /**
-   * Drives all segments to completion with `this.fh` open. If a server mid-way
-   * reports a different total than the probe, the new size is adopted (file
-   * resized, segments re-sliced around existing progress) and the remainder
-   * is re-driven — so exactly the real amount is downloaded, never more.
-   */
+  // Drives all segments to completion with `this.fh` open. If a server mid-way
   private async driveSegments(): Promise<void> {
     let ticks = 0;
     const tick = setInterval(() => {
@@ -1025,10 +926,6 @@ export class SegmentedDownload {
       this.destroyRunAgents();
       if (isRangeUnsupportedError(e) && !this.aborted) {
         // The server advertised ranges but answers 200 with the whole file.
-        // The pre-allocated file only holds partial garbage: drop it and the
-        // segment state, then download once over a single connection.
-        // Bump the generation first so straggler segment attempts from this
-        // phase fail fast instead of interfering with the fallback.
         this.runId++;
         this.supportsRange = false;
         this.numConnections = 1;
@@ -1044,13 +941,7 @@ export class SegmentedDownload {
     }
   }
 
-  /**
-   * Adopt a server-reported total mid-download, preserving bytes already
-   * secured. Grows: extend the file and queue one tail segment. Shrinks:
-   * clamp segments and truncate. Either way the previous round's streams are
-   * parked first — a stale stream writing concurrently with the re-driven one
-   * would double-count and corrupt.
-   */
+  // Adopt a server-reported total mid-download, preserving bytes already
   private async adoptSize(newTotal: number): Promise<boolean> {
     try {
       if (!this.fh) return false;

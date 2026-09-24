@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld('jetro', {
   decideClose: (opts: { decision: 'minimize' | 'exit' | 'cancel'; remember?: boolean }) =>
     ipcRenderer.invoke('app:close-decision', opts),
   resetAll: () => ipcRenderer.invoke('app:reset-all'),
+  resizeBrowserDialog: (height: number) => ipcRenderer.send('browser-dialog:resize', height),
   openExternal: (url: string) => ipcRenderer.invoke('app:open-url', url),
   getVersion: () => ipcRenderer.invoke('app:get-version'),
   checkUpdate: () => ipcRenderer.invoke('app:check-update'),

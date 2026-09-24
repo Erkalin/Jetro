@@ -21,19 +21,16 @@ export function fmtSize(n: number, estimated?: boolean) {
   return estimated && n ? `~${s}` : s;
 }
 
-/** 0–100 progress of an item (same math as the card progress bar). */
 export function itemPct(it: Item): number {
   if (!it.totalBytes) return 0;
   return Math.min(100, (it.downloadedBytes / it.totalBytes) * 100);
 }
 
-/** Details-view Status column: "Completed" or a 2-decimal percentage. */
 export function fmtDetailStatus(it: Item, completedLabel: string = en.status.completed): string {
   if (it.status === 'completed') return completedLabel;
   return `${itemPct(it).toFixed(2)}%`;
 }
 
-/** Details-view Size column: downloaded + overall size ("12.5 MB / 100 MB"). */
 export function fmtDetailSize(it: Item): string {
   if (it.status === 'completed') {
     const total = it.totalBytes || it.downloadedBytes;
@@ -45,16 +42,12 @@ export function fmtDetailSize(it: Item): string {
   return `${done ? fmtBytes(done) : '0 B'} / ${fmtSize(total, !!it.totalBytesIsEstimate)}`;
 }
 
-/** Effective "last try" timestamp (backend field, createdAt fallback). */
 export function lastTryOf(it: Item): number {
   const t = Number((it as any)?.lastTryAt) || Number((it as any)?.createdAt) || 0;
   return t > 0 ? t : 0;
 }
 
-/** Details-view Last Try column: month + day + 24h time ("Sep 11 14:05:09").
- *  In Persian mode (locale starting with 'fa') the day/month come from the
- *  Jalali calendar via Intl, so `months` should hold Jalali names
- *  (فروردین … اسفند) — e.g. "شهریور ۲۳ ۱۴:۰۵:۰۹" (digits also localized). */
+// fa locale uses Jalali calendar.
 export function fmtLastTry(ts: number, months: readonly string[] = en.months.short, locale?: string): string {
   if (!ts) return '—';
   const d = new Date(ts);
@@ -75,13 +68,11 @@ export function fmtLastTry(ts: number, months: readonly string[] = en.months.sho
         return `${months[jMonth - 1] ?? jMonth} ${toFaDigits(jDay)} ${toFaDigits(time)}`;
       }
     } catch {
-      // Fall through to the Gregorian rendering below.
     }
   }
   return `${months[d.getMonth()]} ${pad(d.getDate())} ${time}`;
 }
 
-/** Latin 0-9 → Persian ۰-۹. Used only for the localized Last Try column. */
 function toFaDigits(v: string | number): string {
   return String(v).replace(/[0-9]/g, (ch) => '۰۱۲۳۴۵۶۷۸۹'[Number(ch)]);
 }
@@ -110,7 +101,6 @@ export function statusLabel(status: string, s: AppStrings['status'] = en.status)
 }
 
 export function statusColor(status: string) {
-  // Theme-aware via CSS vars so statuses stay readable on light + dark glass.
   switch (status) {
     case 'downloading': return 'var(--green)';
     case 'completed': return 'var(--accent)';
@@ -120,11 +110,7 @@ export function statusColor(status: string) {
   }
 }
 
-/**
- * Format a stabilized ETA value. Coarse quantization keeps the display still:
- * sub-20s counts down per second, larger values step in 5s increments so a
- * wobbling second estimate can't flicker the text every tick.
- */
+// Quantized ETA, stable on large values.
 export function formatEtaSec(sec: number | null | undefined): string {
   if (sec == null) return '—';
   const v = Number(sec);
@@ -139,9 +125,6 @@ export function formatEtaSec(sec: number | null | undefined): string {
 export function fmtEta(it: Item, fallbackBps?: number): string {
   if (it.status === 'completed') return '—';
   const raw = Number(it.speedBps || 0);
-  // During a brief stall the instantaneous speed decays toward 0 while the
-  // session average is still healthy — fall back to it so ETA degrades
-  // gracefully instead of flickering to "—" and back.
   const fb = Math.max(0, Math.round(Number(fallbackBps) || 0));
   const sp = raw > 0 ? raw : fb;
   if (sp <= 0 || !it.totalBytes) return '—';

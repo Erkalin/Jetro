@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as https from 'https';
 import { execFile } from 'child_process';
 
-// Pinned versions — bump deliberately.
+// Pinned versions.
 const YTDLP_VERSION = process.env.YTDLP_VERSION || '2026.08.19';
 const FFMPEG_VERSION = process.env.FFMPEG_VERSION || '9.0';
 const QUICKJS_VERSION = process.env.QUICKJS_VERSION || 'v0.16.2';
@@ -12,7 +12,6 @@ const isWin = process.platform === 'win32';
 const YTDLP_BIN = isWin ? 'yt-dlp.exe' : 'yt-dlp';
 const YTDLP_URL = `https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/${YTDLP_BIN}`;
 
-// Gyan essentials (GPLv3 static): contains bin/ffmpeg.exe (+ ffprobe/ffplay, unused — only ffmpeg is shipped).
 const FFMPEG_ZIP_URL = `https://github.com/GyanD/codexffmpeg/releases/download/${FFMPEG_VERSION}/ffmpeg-${FFMPEG_VERSION}-essentials_build.zip`;
 
 const QUICKJS_BIN = isWin ? 'quickjs.exe' : 'quickjs';
@@ -24,7 +23,7 @@ async function main() {
   const outDir = path.join(process.cwd(), 'bin');
   fs.mkdirSync(outDir, { recursive: true });
 
-  // 1. yt-dlp (ejs challenge solvers are bundled inside the official exe — nothing extra to fetch).
+  // 1. yt-dlp.
   const ytdlpOut = path.join(outDir, YTDLP_BIN);
   if (fs.existsSync(ytdlpOut)) {
     console.log(`[fetch-binaries] yt-dlp exists (${fs.statSync(ytdlpOut).size} bytes), skipping`);
@@ -35,9 +34,7 @@ async function main() {
     if (!isWin) { try { fs.chmodSync(ytdlpOut, 0o755); } catch {} }
   }
 
-  // 2. ffmpeg only (extract just ffmpeg.exe, drop ffprobe + ffplay + docs).
-  // ffprobe was removed: yt-dlp merges with ffmpeg alone, app never calls ffprobe.
-  // ffmpeg is always bundled — every release ships it.
+  // 2. ffmpeg only.
   const ffmpegOut = path.join(outDir, isWin ? 'ffmpeg.exe' : 'ffmpeg');
   if (fs.existsSync(ffmpegOut)) {
     console.log('[fetch-binaries] ffmpeg exists, skipping');
@@ -57,8 +54,7 @@ async function main() {
     try { fs.unlinkSync(zipPath); } catch {}
   }
 
-  // 3. QuickJS runtime for yt-dlp EJS challenges (~2MB). System deno/node are
-  // also auto-detected at runtime; QuickJS guarantees offline out-of-box support.
+  // 3. QuickJS.
   const qjsOut = path.join(outDir, QUICKJS_BIN);
   if (fs.existsSync(qjsOut)) {
     console.log(`[fetch-binaries] quickjs exists (${fs.statSync(qjsOut).size} bytes), skipping`);
@@ -95,7 +91,6 @@ function download(url: string, dest: string, redirects = 5): Promise<void> {
   });
 }
 
-/** Extract only ffmpeg(.exe) from the Gyan zip via PowerShell (Windows) or unzip (posix). */
 function extractFfmpeg(zipPath: string, outDir: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (isWin) {

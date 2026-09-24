@@ -8,6 +8,28 @@ body {
   line-height: 1.55;
   overflow: hidden;
   transition: background-color 0.25s ease, color 0.25s ease;
+  /* App-like behavior: labels/buttons/lists are not selectable.
+     Form fields and logs re-enable selection below. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* Keep text editable/selectable where the user actually types or reads logs. */
+input,
+textarea,
+select,
+[contenteditable='true'],
+pre,
+code {
+  user-select: text;
+  -webkit-user-select: text;
+}
+/* Opt-in for any copyable readout (URLs, paths, error text, etc.). */
+.allow-select {
+  user-select: text;
+  -webkit-user-select: text;
+}
+img {
+  -webkit-user-drag: none;
 }
 button, input, select, textarea {
   font-family: var(--font-main);
