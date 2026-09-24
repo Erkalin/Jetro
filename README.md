@@ -29,7 +29,123 @@ engine, bundled with yt-dlp for video and audio downloads from <big>1000+</big> 
 
 ## 👀 Preview
 
-![Jetro app preview](docs/preview.png)
+<details>
+<summary><strong><big>📸 Click to expand screenshots</big></strong></summary>
+<br>
+
+<details>
+<summary><strong>📱 App</strong></summary>
+<br>
+
+![Main window](docs/app/preview.png)
+<p align="center"><sub>Main window</sub></p>
+
+![Main window (Persian)](docs/app/preview-fa.png)
+<p align="center"><sub>Main window (Persian)</sub></p>
+
+![Video qualities & audio picker](docs/app/youtube-manual.png)
+<p align="center"><sub>Video qualities & audio picker</sub></p>
+
+![Download from browser](docs/app/browser-download-popup.png)
+<p align="center"><sub>Download from browser</sub></p>
+
+![Download analytics](docs/app/analysis.png)
+<p align="center"><sub>Download analytics</sub></p>
+
+![Download properties](docs/app/properties.png)
+<p align="center"><sub>Download properties</sub></p>
+
+![Browser extension](docs/app/resolver.png)
+<p align="center"><sub>Browser extension</sub></p>
+
+![App settings](docs/app/settings.png)
+<p align="center"><sub>App settings</sub></p>
+
+![Keyboard shortcuts](docs/app/shortcuts.png)
+<p align="center"><sub>Keyboard shortcuts</sub></p>
+
+![List pagination](docs/app/pagination.png)
+<p align="center"><sub>List pagination</sub></p>
+
+</details>
+
+<details>
+<summary><strong>🕐 Scheduler</strong></summary>
+<br>
+
+![General & start schedule](docs/scheduler/scheduler-1.png)
+<p align="center"><sub>General & start schedule</sub></p>
+
+![Stop schedule & retries](docs/scheduler/scheduler-2.png)
+<p align="center"><sub>Stop schedule & retries</sub></p>
+
+![Power actions on finish](docs/scheduler/scheduler-3.png)
+<p align="center"><sub>Power actions on finish</sub></p>
+
+![Queue files](docs/scheduler/scheduler-files.png)
+<p align="center"><sub>Queue files</sub></p>
+
+</details>
+
+<details>
+<summary><strong>🎨 Themes</strong></summary>
+<br>
+
+![Amber](docs/themes/theme-amber.png)
+
+![Aqua](docs/themes/theme-aqua.png)
+
+![Blossom](docs/themes/theme-blossom.png)
+
+![Clover](docs/themes/theme-clover.png)
+
+![Coral](docs/themes/theme-coral.png)
+
+![Crimson](docs/themes/theme-crimson.png)
+
+![Dracula](docs/themes/theme-dracula.png)
+
+![Ember](docs/themes/theme-ember.png)
+
+![Espresso](docs/themes/theme-espresso.png)
+
+![Forest](docs/themes/theme-forest.png)
+
+![Gold](docs/themes/theme-gold.png)
+
+![Gray](docs/themes/theme-gray.png)
+
+![Hunter](docs/themes/theme-hunter.png)
+
+![Indigo](docs/themes/theme-indigo.png)
+
+![Jetro](docs/themes/theme-jetro.png)
+
+![Lavender](docs/themes/theme-lavender.png)
+
+![Midnight](docs/themes/theme-midnight.png)
+
+![Navy](docs/themes/theme-navy.png)
+
+![Nord](docs/themes/theme-nord.png)
+
+![Pistachio](docs/themes/theme-pistachio.png)
+
+![Ruby](docs/themes/theme-ruby.png)
+
+![Scarlet](docs/themes/theme-scarlet.png)
+
+![Silver](docs/themes/theme-silver.png)
+
+![Solarized](docs/themes/theme-solarized.png)
+
+![Teal](docs/themes/theme-teal.png)
+
+![Turquoise](docs/themes/theme-turquoise.png)
+
+</details>
+
+</details>
 
 ## 📥 Download
 
@@ -96,7 +212,7 @@ Twitch, Facebook, X/Twitter and
 
 
 > 🔴 English and Persian are human-translated; the other 38 languages are AI-translated — please report mistakes via [Issues](https://github.com/Erkalin/Jetro/issues)
-### 🧩 Browser extension (new in v1.0.0, dialog in v1.3.0)
+### 🧩 Browser extension (new in v1.0.0)
 
 Jetro Resolver is located in `extension/` — a Chromium MV3 extension (Chrome,
 Edge, Brave, Opera, Vivaldi, with Firefox compatibility). Send any link,
